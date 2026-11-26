@@ -28,12 +28,102 @@ interface MobileDiffViewerProps {
   onNextFile?: () => void;
   filePositionLabel?: string;
   sectionLabel?: string;
+  emptyTitle?: string;
+  emptyDescription?: string;
   actionButton?: {
     label: string;
     variant: 'stage' | 'unstage';
     busy?: boolean;
     onClick: () => void;
   };
+}
+
+/**
+ * Ensures the patch passed to @git-diff-view/file always includes unified
+ * `---` / `+++` headers and LF line endings so every hunk, addition, deletion,
+ * and intra-line word diff parses reliably.
+ */
+function buildDiffPatchList(diff: DiffPayload): string[] {
+  const normalized = (diff.patch ?? '').replace(/\r\n/g, '\n');
+  if (!normalized.trim()) {
+    return [];
+  }
+  const hasHeader = /^---\s+/m.test(normalized) && /^\+\+\+\s+/m.test(normalized);
+  if (hasHeader) {
+    return [normalized.endsWith('\n') ? normalized : `${normalized}\n`];
+  }
+  if (diff.hunks.length === 0) {
+    return [];
+  }
+  const oldHeader =
+    diff.status === 'added' || diff.status === 'untracked'
+      ? '--- /dev/null'
+      : `--- a/${diff.oldPath ?? diff.path}`;
+  const newHeader = diff.status === 'deleted' ? '+++ /dev/null' : `+++ b/${diff.path}`;
+  const body = diff.hunks.map((h) => h.replace(/\r\n/g, '\n')).join('\n');
+  return [`${oldHeader}\n${newHeader}\n${body}\n`];
+}
+
+function normalizeContentForPatch(content: string | undefined, patchHasCr: boolean): string {
+  if (!content) return '';
+  return patchHasCr ? content : content.replace(/\r\n/g, '\n');
+}
+
+function DiffStatBlocks({ additions, deletions }: { additions: number; deletions: number }) {
+  const total = additions + deletions;
+  if (total === 0) return null;
+  const slots = 5;
+  const addBlocks = Math.round((additions / total) * slots);
+  const delBlocks = total > 0 && deletions > 0 && addBlocks === slots ? slots - 1 : slots - addBlocks;
+  const finalAdd = additions > 0 && addBlocks === 0 ? 1 : Math.min(slots, addBlocks);
+  const finalDel = Math.max(0, Math.min(slots - finalAdd, delBlocks));
+
+  return (
+    <span className="inline-flex items-center gap-0.5" title={`+${additions} additions, -${deletions} deletions`}>
+      {Array.from({ length: slots }).map((_, idx) => {
+        const color =
+          idx < finalAdd
+            ? 'bg-emerald-400'
+            : idx < finalAdd + finalDel
+              ? 'bg-rose-500'
+              : 'bg-[#30363d]';
+        return <span key={idx} className={`h-2 w-2 rounded-[2px] ${color}`} />;
+      })}
+    </span>
+  );
+}
+
+function renderColorizedRawPatch(patch: string, wordWrap: boolean, fontSize: number) {
+  const lines = patch.replace(/\r\n/g, '\n').split('\n');
+  return (
+    <div
+      className={`font-mono leading-relaxed ${wordWrap ? 'whitespace-pre-wrap break-words' : 'whitespace-pre'}`}
+      style={{ fontSize: `${fontSize}px` }}
+    >
+      {lines.map((line, idx) => {
+        let rowClass = 'text-[#c9d1d9] px-2 py-0.5';
+        if (line.startsWith('@@ ')) {
+          rowClass = 'bg-[#122136] text-sky-300 px-2 py-1 border-y border-[#213654]';
+        } else if (line.startsWith('+') && !line.startsWith('+++')) {
+          rowClass = 'bg-[#12281c] text-emerald-200 border-l-2 border-emerald-400 px-2 py-0.5';
+        } else if (line.startsWith('-') && !line.startsWith('---')) {
+          rowClass = 'bg-[#2d1619] text-rose-200 border-l-2 border-rose-500 px-2 py-0.5';
+        } else if (
+          line.startsWith('diff --git ') ||
+          line.startsWith('index ') ||
+          line.startsWith('--- ') ||
+          line.startsWith('+++ ')
+        ) {
+          rowClass = 'text-[#8b949e] px-2 py-0.5';
+        }
+        return (
+          <div key={idx} className={rowClass}>
+            {line || ' '}
+          </div>
+        );
+      })}
+    </div>
+  );
 }
 
 export function MobileDiffViewer({
@@ -47,6 +137,8 @@ export function MobileDiffViewer({
   onNextFile,
   filePositionLabel,
   sectionLabel,
+  emptyTitle,
+  emptyDescription,
   actionButton,
 }: MobileDiffViewerProps) {
   const [isMobileScreen, setIsMobileScreen] = useState(() =>
@@ -66,28 +158,38 @@ export function MobileDiffViewer({
     return () => window.removeEventListener('resize', onResize);
   }, []);
 
+  const effectiveMode = mode === 'split' && isMobileScreen ? 'unified' : mode;
+
   const built = useMemo(() => {
-    if (!diff || diff.isBinary || diff.isTooLarge || diff.hunks.length === 0) {
+    if (!diff || diff.isBinary || diff.isTooLarge || rawMode) {
+      return { instance: null as DiffFile | null, parseError: null as string | null };
+    }
+    const patchList = buildDiffPatchList(diff);
+    if (patchList.length === 0) {
       return { instance: null as DiffFile | null, parseError: null as string | null };
     }
     try {
+      const patchHasCr = patchList[0].includes('\r');
       const instance = DiffFile.createInstance({
         oldFile: {
           fileName: diff.oldPath ?? diff.path,
           fileLang: diff.lang,
-          content: diff.oldContent ?? '',
+          content: normalizeContentForPatch(diff.oldContent, patchHasCr),
         },
         newFile: {
           fileName: diff.path,
           fileLang: diff.lang,
-          content: diff.newContent ?? '',
+          content: normalizeContentForPatch(diff.newContent, patchHasCr),
         },
-        hunks: diff.hunks,
+        hunks: patchList,
       });
       instance.initTheme('dark');
       instance.init();
-      instance.buildUnifiedDiffLines();
-      instance.buildSplitDiffLines();
+      if (effectiveMode === 'split') {
+        instance.buildSplitDiffLines();
+      } else {
+        instance.buildUnifiedDiffLines();
+      }
       return { instance, parseError: null };
     } catch (err) {
       return {
@@ -95,7 +197,7 @@ export function MobileDiffViewer({
         parseError: err instanceof Error ? err.message : 'Unable to parse diff hunks',
       };
     }
-  }, [diff]);
+  }, [diff, effectiveMode, rawMode]);
 
   const copyFilePath = async () => {
     if (!diff) return;
@@ -139,15 +241,16 @@ export function MobileDiffViewer({
     return (
       <div className="hidden min-h-[420px] flex-col items-center justify-center rounded-2xl border border-dashed border-[#30363d] bg-[#161b22]/50 p-8 text-center lg:flex">
         <FileCode2 className="h-10 w-10 text-[#484f58]" />
-        <h3 className="mt-3 text-sm font-medium text-[#e6edf3]">Select a file to inspect diff</h3>
+        <h3 className="mt-3 text-sm font-medium text-[#e6edf3]">
+          {emptyTitle ?? 'Select a file to inspect diff'}
+        </h3>
         <p className="mt-1 max-w-xs text-xs text-[#8b949e]">
-          Choose an unstaged, untracked, staged, or committed file from the list to view syntax-highlighted changes.
+          {emptyDescription ??
+            'Choose an unstaged, untracked, staged, or committed file from the list to view syntax-highlighted changes.'}
         </p>
       </div>
     );
   }
-
-  const effectiveMode = mode === 'split' && isMobileScreen ? 'unified' : mode;
 
   return (
     <div className="flex flex-col gap-3">
@@ -173,10 +276,23 @@ export function MobileDiffViewer({
                   </span>
                 )}
                 <FileStatusBadge status={diff.status} showLabel />
-                <span className="font-mono text-xs text-emerald-400">+{diff.additions}</span>
-                <span className="font-mono text-xs text-rose-400">-{diff.deletions}</span>
+                <DiffStatBlocks additions={diff.additions} deletions={diff.deletions} />
+                <span className="font-mono text-xs font-semibold text-emerald-400">
+                  +{diff.additions}
+                </span>
+                <span className="font-mono text-xs font-semibold text-rose-400">
+                  -{diff.deletions}
+                </span>
+                {diff.hunks.length > 0 && (
+                  <span className="text-[11px] text-[#8b949e]">
+                    · {diff.hunks.length} {diff.hunks.length === 1 ? 'hunk' : 'hunks'}
+                  </span>
+                )}
                 {loading && (
-                  <span className="text-[11px] text-sky-400">Refreshing...</span>
+                  <span className="inline-flex items-center gap-1 text-[11px] text-sky-400">
+                    <span className="h-2.5 w-2.5 animate-spin rounded-full border border-sky-400 border-t-transparent" />
+                    Loading...
+                  </span>
                 )}
               </div>
               <button
@@ -186,7 +302,7 @@ export function MobileDiffViewer({
                 title="Copy file path"
               >
                 <span className="break-all font-mono text-xs font-medium text-[#e6edf3]">
-                  {diff.path}
+                  {diff.oldPath ? `${diff.oldPath} → ${diff.path}` : diff.path}
                 </span>
                 <Copy className="h-3 w-3 shrink-0 text-[#6e7681]" />
                 {copiedPath && <span className="text-[10px] text-emerald-400">Copied</span>}
@@ -325,20 +441,15 @@ export function MobileDiffViewer({
           {diff.note ?? `Diff is very large (${diff.lineCount} lines) and skipped to keep mobile rendering fast.`}
         </div>
       ) : rawMode || built.parseError ? (
-        <div className="overflow-x-auto rounded-2xl border border-[#30363d] bg-[#0d1117] p-3">
+        <div className="overflow-x-auto rounded-2xl border border-[#30363d] bg-[#0d1117] py-2">
           {built.parseError && (
-            <p className="mb-2 text-xs text-amber-300">
+            <p className="mb-2 px-3 text-xs text-amber-300">
               Showing raw patch ({built.parseError})
             </p>
           )}
-          <pre
-            className={`font-mono leading-relaxed text-[#e6edf3] ${
-              wordWrap ? 'whitespace-pre-wrap break-words' : 'whitespace-pre'
-            }`}
-            style={{ fontSize: `${fontSize}px` }}
-          >
-            {diff.patch || '(Empty file / no textual diff)'}
-          </pre>
+          {diff.patch
+            ? renderColorizedRawPatch(diff.patch, wordWrap, fontSize)
+            : <div className="px-3 py-2 text-xs text-[#8b949e]">(Empty file / no textual diff)</div>}
         </div>
       ) : built.instance ? (
         <div className="gitdock-diff">

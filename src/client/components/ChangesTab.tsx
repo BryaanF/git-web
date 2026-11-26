@@ -7,7 +7,15 @@ import {
   RotateCcw,
   Send,
 } from 'lucide-react';
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
+import {
+  COMMIT_TYPES,
+  COMMIT_TYPE_META,
+  MAX_COMMIT_SUBJECT_LENGTH,
+  formatCommitSubject,
+  parseCommitSubject,
+  type CommitType,
+} from '../../shared/commit-standard.ts';
 import type { ChangedFile, DiffPayload, RepoStatusSummary } from '../../shared/types.ts';
 import { api } from '../api.ts';
 import { MobileDiffViewer } from './MobileDiffViewer.tsx';
@@ -42,9 +50,15 @@ export function ChangesTab({
   const [busyAction, setBusyAction] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
 
+  const [commitType, setCommitType] = useState<CommitType | 'custom' | null>(null);
+  const [commitScope, setCommitScope] = useState('');
   const [commitSummary, setCommitSummary] = useState('');
   const [commitDesc, setCommitDesc] = useState('');
   const [confirmDiscard, setConfirmDiscard] = useState<ChangedFile | null>(null);
+
+  const diffCacheRef = useRef<Map<string, DiffPayload>>(new Map());
+  const loadedTargetKeyRef = useRef<string | null>(null);
+  const prevRefreshTickRef = useRef<number>(refreshTick);
 
   const flatFiles = useMemo(() => {
     const items: ChangedFile[] = [];
@@ -54,41 +68,45 @@ export function ChangesTab({
     return items;
   }, [filter, status.conflicted, status.staged, status.unstaged]);
 
-  // Clear or preserve valid selection when status refreshes
+  // Clear cache and selection state when repository switches
   useEffect(() => {
-    if (!selected) return;
-    const stillExists =
-      (selected.section === 'staged' && status.staged.some((f) => f.path === selected.path)) ||
-      (selected.section === 'unstaged' && status.unstaged.some((f) => f.path === selected.path)) ||
-      (selected.section === 'conflicted' &&
-        status.conflicted.some((f) => f.path === selected.path));
-    if (!stillExists) {
-      setSelected(null);
-      setDiff(null);
-    }
-  }, [selected, status]);
-
-  useEffect(() => {
-    if (!selected) return;
-    let cancelled = false;
-    setDiffLoading(true);
+    diffCacheRef.current.clear();
+    loadedTargetKeyRef.current = null;
+    setSelected(null);
+    setDiff(null);
     setDiffError(null);
-    api
-      .getWorkingDiff(repoId, selected.path, selected.section, contextLines)
-      .then((res) => {
-        if (!cancelled) setDiff(res);
-      })
-      .catch((err) => {
-        if (!cancelled) setDiffError(err instanceof Error ? err.message : 'Failed to load diff');
-      })
-      .finally(() => {
-        if (!cancelled) setDiffLoading(false);
-      });
+    setDiffLoading(false);
+  }, [repoId]);
 
-    return () => {
-      cancelled = true;
-    };
-  }, [repoId, selected, contextLines, refreshTick]);
+  // Clear or preserve valid selection when status/filter refreshes, and auto-select on desktop
+  useEffect(() => {
+    if (selected) {
+      const stillExists = flatFiles.some(
+        (f) => f.path === selected.path && f.section === selected.section,
+      );
+      if (!stillExists) {
+        setSelected(null);
+        setDiff(null);
+        setDiffError(null);
+        setDiffLoading(false);
+        loadedTargetKeyRef.current = null;
+      }
+      return;
+    }
+
+    if (
+      typeof window !== 'undefined' &&
+      window.innerWidth >= 1024 &&
+      flatFiles.length > 0
+    ) {
+      setSelected({ path: flatFiles[0].path, section: flatFiles[0].section });
+    }
+  }, [flatFiles, selected]);
+
+  const selectedFileMeta = useMemo(() => {
+    if (!selected) return undefined;
+    return flatFiles.find((f) => f.path === selected.path && f.section === selected.section);
+  }, [flatFiles, selected]);
 
   const selectedIndex = useMemo(() => {
     if (!selected) return -1;
@@ -96,6 +114,104 @@ export function ChangesTab({
       (f) => f.path === selected.path && f.section === selected.section,
     );
   }, [flatFiles, selected]);
+
+  const flatFilesRef = useRef<ChangedFile[]>(flatFiles);
+  flatFilesRef.current = flatFiles;
+  const selectedIndexRef = useRef<number>(selectedIndex);
+  selectedIndexRef.current = selectedIndex;
+
+  useEffect(() => {
+    const tickChanged = prevRefreshTickRef.current !== refreshTick;
+    prevRefreshTickRef.current = refreshTick;
+
+    if (tickChanged) {
+      diffCacheRef.current.clear();
+    }
+
+    if (!selected) {
+      setDiff(null);
+      setDiffError(null);
+      setDiffLoading(false);
+      loadedTargetKeyRef.current = null;
+      return;
+    }
+
+    let cancelled = false;
+    const targetKey = `${repoId}:${selected.section}:${selected.path}:${contextLines}`;
+
+    const isSameTargetBackgroundRefresh =
+      tickChanged && loadedTargetKeyRef.current === targetKey;
+
+    const cached = !tickChanged ? diffCacheRef.current.get(targetKey) : undefined;
+    if (cached) {
+      loadedTargetKeyRef.current = targetKey;
+      setDiff(cached);
+      setDiffError(null);
+      setDiffLoading(false);
+    } else {
+      if (!isSameTargetBackgroundRefresh) {
+        setDiff(null);
+        setDiffLoading(true);
+      }
+      setDiffError(null);
+
+      const hint = selectedFileMeta?.isUntracked ? 'untracked' : undefined;
+      api
+        .getWorkingDiff(repoId, selected.path, selected.section, contextLines, hint)
+        .then((res) => {
+          if (cancelled) return;
+          if (diffCacheRef.current.size > 40) {
+            const firstKey = diffCacheRef.current.keys().next().value;
+            if (firstKey) diffCacheRef.current.delete(firstKey);
+          }
+          diffCacheRef.current.set(targetKey, res);
+          loadedTargetKeyRef.current = targetKey;
+          setDiff((prev) => {
+            if (
+              prev &&
+              prev.path === res.path &&
+              prev.patch === res.patch &&
+              prev.status === res.status &&
+              prev.additions === res.additions &&
+              prev.deletions === res.deletions
+            ) {
+              return prev;
+            }
+            return res;
+          });
+
+          // Prefetch next adjacent file quietly for instant Next-file navigation
+          const currentIdx = selectedIndexRef.current;
+          const nextFile = currentIdx >= 0 ? flatFilesRef.current[currentIdx + 1] : undefined;
+          if (nextFile) {
+            const nextKey = `${repoId}:${nextFile.section}:${nextFile.path}:${contextLines}`;
+            if (!diffCacheRef.current.has(nextKey)) {
+              const nextHint = nextFile.isUntracked ? 'untracked' : undefined;
+              void api
+                .getWorkingDiff(repoId, nextFile.path, nextFile.section, contextLines, nextHint)
+                .then((nextDiff) => {
+                  if (!cancelled) {
+                    diffCacheRef.current.set(nextKey, nextDiff);
+                  }
+                })
+                .catch(() => {});
+            }
+          }
+        })
+        .catch((err) => {
+          if (!cancelled && !isSameTargetBackgroundRefresh) {
+            setDiffError(err instanceof Error ? err.message : 'Failed to load diff');
+          }
+        })
+        .finally(() => {
+          if (!cancelled) setDiffLoading(false);
+        });
+    }
+
+    return () => {
+      cancelled = true;
+    };
+  }, [repoId, selected, selectedFileMeta?.isUntracked, contextLines, refreshTick]);
 
   const runAction = async (key: string, fn: () => Promise<RepoStatusSummary>) => {
     setBusyAction(key);
@@ -110,14 +226,44 @@ export function ChangesTab({
     }
   };
 
+  const detectedCommitMeta = useMemo(() => parseCommitSubject(commitSummary), [commitSummary]);
+  const formattedCommitSummary = useMemo(
+    () =>
+      formatCommitSubject({
+        type: commitType,
+        scope: commitScope,
+        summary: commitSummary,
+      }),
+    [commitType, commitScope, commitSummary],
+  );
+  const commitHasValidType =
+    commitType === 'custom' || Boolean(commitType) || Boolean(detectedCommitMeta);
+  const commitTooLong =
+    commitType !== 'custom' && formattedCommitSummary.length > MAX_COMMIT_SUBJECT_LENGTH;
+  const isCommitDisabled =
+    busyAction !== null ||
+    status.staged.length === 0 ||
+    !commitSummary.trim() ||
+    !commitHasValidType ||
+    commitTooLong;
+
   const handleCommit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!commitSummary.trim() || status.staged.length === 0) return;
+    if (
+      !formattedCommitSummary.trim() ||
+      status.staged.length === 0 ||
+      !commitHasValidType ||
+      commitTooLong
+    ) {
+      return;
+    }
     setBusyAction('commit');
     setActionError(null);
     try {
-      const res = await api.commit(repoId, commitSummary, commitDesc);
+      const res = await api.commit(repoId, formattedCommitSummary, commitDesc);
       onStatusUpdated(res.status);
+      setCommitType(null);
+      setCommitScope('');
       setCommitSummary('');
       setCommitDesc('');
       onCommitted();
@@ -335,27 +481,116 @@ export function ChangesTab({
                   </span>
                   <span className="font-mono text-[11px] text-[#8b949e]">{status.branch}</span>
                 </div>
+
+                {/* 4-type Commit Standard Selector */}
+                <div className="space-y-1.5">
+                  <div className="flex flex-wrap items-center gap-1.5">
+                    {COMMIT_TYPES.map((type) => {
+                      const active = commitType === type || (!commitType && detectedCommitMeta?.type === type);
+                      const activeColors: Record<CommitType, string> = {
+                        bugfix: 'border-rose-500/60 bg-rose-500/20 text-rose-200 ring-1 ring-rose-500/35',
+                        features: 'border-emerald-500/60 bg-emerald-500/20 text-emerald-200 ring-1 ring-emerald-500/35',
+                        chores: 'border-zinc-400/60 bg-zinc-500/20 text-zinc-100 ring-1 ring-zinc-400/35',
+                        improvement: 'border-sky-500/60 bg-sky-500/20 text-sky-200 ring-1 ring-sky-500/35',
+                      };
+                      return (
+                        <button
+                          key={type}
+                          type="button"
+                          title={COMMIT_TYPE_META[type].description}
+                          onClick={() => setCommitType((prev) => (prev === type ? null : type))}
+                          className={`rounded-lg border px-2.5 py-1 font-mono text-[11px] font-semibold transition ${
+                            active
+                              ? activeColors[type]
+                              : 'border-[#30363d] bg-[#0d1117] text-[#8b949e] hover:border-[#484f58] hover:text-[#e6edf3]'
+                          }`}
+                        >
+                          {type}
+                        </button>
+                      );
+                    })}
+                    <button
+                      type="button"
+                      title="Freeform commit header for external repositories"
+                      onClick={() => setCommitType((prev) => (prev === 'custom' ? null : 'custom'))}
+                      className={`rounded-lg border px-2 py-1 text-[11px] font-medium transition ${
+                        commitType === 'custom'
+                          ? 'border-[#58a6ff]/60 bg-[#58a6ff]/15 text-sky-200'
+                          : 'border-[#30363d] bg-[#0d1117] text-[#6e7681] hover:text-[#c9d1d9]'
+                      }`}
+                    >
+                      custom
+                    </button>
+                  </div>
+
+                  {commitType && commitType !== 'custom' && (
+                    <input
+                      type="text"
+                      value={commitScope}
+                      onChange={(e) => setCommitScope(e.target.value)}
+                      placeholder="Scope (opsional, mis. ui, git, api)"
+                      className="w-full rounded-xl border border-[#30363d] bg-[#0d1117] px-3 py-1.5 font-mono text-xs text-[#e6edf3] placeholder-[#484f58] focus:border-sky-500 focus:outline-none"
+                    />
+                  )}
+                </div>
+
                 <input
                   type="text"
                   value={commitSummary}
                   onChange={(e) => setCommitSummary(e.target.value)}
-                  placeholder="Summary (required)"
+                  placeholder={
+                    commitType && commitType !== 'custom'
+                      ? `Ringkasan singkat (mis. ${COMMIT_TYPE_META[commitType].example.replace(/^[^:]+:\s*/, '')})`
+                      : 'Ringkasan commit (pilih tipe di atas atau tulis <type>: <summary>)'
+                  }
                   className="w-full rounded-xl border border-[#30363d] bg-[#0d1117] px-3 py-2 text-sm text-[#e6edf3] placeholder-[#484f58] focus:border-sky-500 focus:outline-none"
                 />
+
+                {formattedCommitSummary ? (
+                  <div className="space-y-1">
+                    <div className="flex items-center justify-between gap-2 rounded-lg bg-[#0d1117] px-2.5 py-1.5 text-[11px]">
+                      <span className="truncate font-mono text-[#c9d1d9]" title={formattedCommitSummary}>
+                        {commitHasValidType ? formattedCommitSummary : `Pilih tipe: bugfix / features / chores / improvement`}
+                      </span>
+                      <span
+                        className={`shrink-0 font-mono ${
+                          commitTooLong
+                            ? 'font-semibold text-rose-400'
+                            : formattedCommitSummary.length >= 42
+                              ? 'text-amber-400'
+                              : 'text-[#6e7681]'
+                        }`}
+                      >
+                        {formattedCommitSummary.length}/{MAX_COMMIT_SUBJECT_LENGTH}
+                      </span>
+                    </div>
+                    {commitTooLong && (
+                      <p className="text-[11px] text-rose-400">
+                        Summary maksimal {MAX_COMMIT_SUBJECT_LENGTH} karakter — tulis garis besar di atas dan pindahkan detail ke description.
+                      </p>
+                    )}
+                  </div>
+                ) : (
+                  !commitType && (
+                    <p className="text-[11px] text-[#6e7681]">
+                      Standar commit: <code className="text-[#8b949e]">bugfix</code>,{' '}
+                      <code className="text-[#8b949e]">features</code>,{' '}
+                      <code className="text-[#8b949e]">chores</code>, atau{' '}
+                      <code className="text-[#8b949e]">improvement</code> (summary maks {MAX_COMMIT_SUBJECT_LENGTH} char).
+                    </p>
+                  )
+                )}
+
                 <textarea
-                  rows={2}
+                  rows={3}
                   value={commitDesc}
                   onChange={(e) => setCommitDesc(e.target.value)}
-                  placeholder="Optional description"
+                  placeholder="Detail perubahan / description (jelaskan rincian di sini)"
                   className="w-full resize-none rounded-xl border border-[#30363d] bg-[#0d1117] px-3 py-2 text-xs text-[#e6edf3] placeholder-[#484f58] focus:border-sky-500 focus:outline-none"
                 />
                 <button
                   type="submit"
-                  disabled={
-                    busyAction !== null ||
-                    status.staged.length === 0 ||
-                    !commitSummary.trim()
-                  }
+                  disabled={isCommitDisabled}
                   className="inline-flex w-full items-center justify-center gap-2 rounded-xl bg-sky-600 px-4 py-2.5 text-sm font-semibold text-white transition hover:bg-sky-500 disabled:cursor-not-allowed disabled:opacity-45"
                 >
                   <Send className="h-4 w-4" />
@@ -371,13 +606,27 @@ export function ChangesTab({
         {/* Diff Viewer Pane */}
         <div className={selected ? 'block' : 'hidden lg:block'}>
           <MobileDiffViewer
-            diff={diff}
-            loading={diffLoading}
-            error={diffError}
+            diff={selected ? diff : null}
+            loading={Boolean(selected) && diffLoading}
+            error={selected ? diffError : null}
             contextLines={contextLines}
             onChangeContextLines={setContextLines}
             onBack={selected ? () => setSelected(null) : undefined}
             sectionLabel={selected?.section}
+            emptyTitle={
+              totalWorking === 0
+                ? 'No changed files'
+                : flatFiles.length === 0
+                  ? 'No files in this filter'
+                  : undefined
+            }
+            emptyDescription={
+              totalWorking === 0
+                ? 'Working tree is clean. Modify, add, or stage files to inspect diffs here.'
+                : flatFiles.length === 0
+                  ? 'Switch filters on the left to view unstaged or staged changes.'
+                  : undefined
+            }
             filePositionLabel={
               selectedIndex >= 0 ? `${selectedIndex + 1} / ${flatFiles.length}` : undefined
             }
