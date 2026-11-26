@@ -1,0 +1,73 @@
+# GitDock Web
+
+Mobile-first web companion for GitHub Desktop workflows — inspect **unstaged**, **untracked**, **staged**, and **verified pushed** code diffs comfortably on your smartphone without touching local ports **80** or **443**.
+
+## Stack & Compatibility Rationale
+
+- **Runtime**: Node.js `>= 22.18` / `26.x` (uses native erasable TypeScript execution directly — zero backend build step required).
+- **Server**: [Hono](https://hono.dev/) + `@hono/node-server` serving both `/api/*` and the built React SPA from a **single unprivileged port** (`7745` by default).
+- **Git Engine**: Native `git` CLI (`execFile`, `shell: false`, `-c core.quotepath=false`, bounded concurrency per repo) — handles Windows `CRLF`, Git Credential Manager, SSH keys, renames, untracked files, and exact `git ls-remote` verification.
+- **UI & Diff Engine**: React 19 + Tailwind CSS v4 + `@git-diff-view/react` (`Unified` single-column mode + `Word Wrap` enabled by default on smartphones, intra-line word diffs, syntax highlighting, and desktop `Split` mode).
+- **Remote / Mobile Connectivity**:
+  - **Same Wi-Fi LAN**: Binds `0.0.0.0:7745`, auto-steps if port is busy, rejects ports `80`/`443` by default, generates an instant QR code with a pairing token.
+  - **Tailscale (Optional HTTPS)**: Run `tailscale serve --bg --https=8443 http://127.0.0.1:7745` for trusted HTTPS (`https://<machine>.ts.net:8443`) over mobile data and PWA installation without colliding with ports `80` or `443`.
+
+## Quick Start
+
+```bash
+npm install
+npm run build
+npm start -- --repo "C:\path\to\your-project"
+```
+
+Simple start preset for Tailscale Serve (`https://<machine>.ts.net:8443 -> http://127.0.0.1:8001`, auto-builds `dist/client` if missing):
+
+```bash
+npm run start:ts
+# or: npm run start:tailscale
+```
+
+Development mode (backend watch + Vite HMR):
+
+```bash
+npm run dev -- --repo "C:\path\to\your-project"
+```
+
+Interactive service & port picker (probes free ports live before starting):
+
+```bash
+npm run dev:pick
+```
+
+Flexible per-service port & service selection examples:
+
+```bash
+# Custom ports for backend API and Vite UI (Vite /api proxy automatically follows server port)
+npm run dev -- --server-port 8080 --client-port 3000
+
+# Candidate list, range, or OS-assigned "auto" ports
+npm run dev -- --server-port 7745,8080,8888 --client-port 5173-5190
+
+# Activate only one service, or run production server mode via runner
+npm run dev -- --services server --server-port 9000 --tailscale-port 9443
+npm run dev -- --services client --client-port 4000 --proxy-port 9000
+npm run runner -- --mode start --port 8080 --strict-port
+```
+
+## CLI Flags & Environment Variables
+
+| Option | Env Variable | Default | Description |
+| :--- | :--- | :--- | :--- |
+| `--server-port <spec>` / `--port <spec>` | `GITWEB_SERVER_PORT` / `GITWEB_PORT` | `7745` | Server port, list (`7745,8080`), range (`8000-8010`), `auto`, or `off` |
+| `--client-port <spec>` | `GITWEB_CLIENT_PORT` / `VITE_PORT` | `5173` | Vite UI port, list, range, `auto`, or `off` |
+| `--tailscale-port <n\|off>` | `GITWEB_TAILSCALE_PORT` | `8443` | Tailscale HTTPS serve port shown in QR/instructions |
+| `--services <list>` | `GITWEB_SERVICES` | `server,client` | Services to activate (`server`, `client`, `all`) |
+| `--proxy-port <n>` | `GITWEB_PROXY_PORT` | `7745` | Backend port for Vite `/api` proxy when running `client` only |
+| `--strict-port` | `GITWEB_STRICT_PORT=1` | `false` | Fail instead of auto-stepping when chosen port is busy |
+| `--allow-privileged-port` | `GITWEB_ALLOW_PRIVILEGED_PORT=1` | `false` | Allow ports `< 1024` (including `80`/`443`) |
+| `--ensure-build` / `--build` | — | `false` | Auto-build `dist/client` if missing (`--ensure-build`) or force rebuild (`--build`) |
+| `--interactive` / `-i` | — | `false` | Interactive live port scanner & service picker |
+| `--dry-run` | — | `false` | Print resolved service & port plan without starting |
+| `--host <ip>` | `GITWEB_HOST` | `0.0.0.0` | Bind interface (`127.0.0.1` for Tailscale-only) |
+| `--repo <path>` | — | CWD | Register one or more local Git repositories on startup |
+| `--no-auth` | `GITWEB_NO_AUTH=1` | `false` | Disable LAN pairing token requirement |

@@ -1,0 +1,7 @@
+node_modules/
+dist/
+.gitweb-repos.json
+.gitweb-auth.json
+*.log
+.DS_Store
+Thumbs.db
