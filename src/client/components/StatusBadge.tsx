@@ -1,3 +1,4 @@
+import { parseCommitSubject, type CommitType } from '../../shared/commit-standard.ts';
 import type { CommitPushState, FileChangeStatus } from '../../shared/types.ts';
 
 const FILE_STATUS_CONFIG: Record<
@@ -102,6 +103,27 @@ export function PushStateBadge({
       {remoteRef && state === 'pushed' && (
         <span className="max-w-[110px] truncate opacity-80">· {remoteRef}</span>
       )}
+    </span>
+  );
+}
+
+const COMMIT_TYPE_STYLE: Record<CommitType, string> = {
+  bugfix: 'border-rose-500/40 bg-rose-500/15 text-rose-300',
+  features: 'border-emerald-500/40 bg-emerald-500/15 text-emerald-300',
+  chores: 'border-zinc-400/35 bg-zinc-500/15 text-zinc-200',
+  improvement: 'border-sky-500/40 bg-sky-500/15 text-sky-300',
+};
+
+export function CommitTypeBadge({ subject }: { subject: string }) {
+  const parsed = parseCommitSubject(subject);
+  if (!parsed) return null;
+  const cls = COMMIT_TYPE_STYLE[parsed.type];
+  return (
+    <span
+      className={`inline-flex items-center gap-1 rounded-full border px-2 py-0.5 font-mono text-[10px] font-semibold ${cls}`}
+    >
+      <span>{parsed.type}</span>
+      {parsed.scope && <span className="opacity-75">({parsed.scope})</span>}
     </span>
   );
 }

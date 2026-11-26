@@ -2,13 +2,14 @@ import {
   ChevronDown,
   FileDiff,
   FolderGit2,
+  FolderSearch,
   GitBranch,
   History,
   KeyRound,
   QrCode,
   RefreshCw,
 } from 'lucide-react';
-import { useCallback, useEffect, useState } from 'react';
+import { Suspense, lazy, useCallback, useEffect, useRef, useState } from 'react';
 import type {
   BranchItem,
   RepoEntry,
@@ -22,11 +23,23 @@ import {
   getStoredToken,
   setStoredToken,
 } from './api.ts';
-import { BranchesTab } from './components/BranchesTab.tsx';
 import { ChangesTab } from './components/ChangesTab.tsx';
-import { ConnectModal } from './components/ConnectModal.tsx';
-import { HistoryTab } from './components/HistoryTab.tsx';
-import { RepoModal } from './components/RepoModal.tsx';
+
+const HistoryTab = lazy(() =>
+  import('./components/HistoryTab.tsx').then((m) => ({ default: m.HistoryTab })),
+);
+const BranchesTab = lazy(() =>
+  import('./components/BranchesTab.tsx').then((m) => ({ default: m.BranchesTab })),
+);
+const RepoModal = lazy(() =>
+  import('./components/RepoModal.tsx').then((m) => ({ default: m.RepoModal })),
+);
+const ConnectModal = lazy(() =>
+  import('./components/ConnectModal.tsx').then((m) => ({ default: m.ConnectModal })),
+);
+const FolderBrowser = lazy(() =>
+  import('./components/FolderBrowser.tsx').then((m) => ({ default: m.FolderBrowser })),
+);
 
 type TabKey = 'changes' | 'history' | 'branches';
 
@@ -55,6 +68,13 @@ export function App() {
   const [sseConnected, setSseConnected] = useState(false);
 
   const [quickRepoPath, setQuickRepoPath] = useState('');
+  const [quickBrowseOpen, setQuickBrowseOpen] = useState(false);
+  const sseCooldownUntilRef = useRef<number>(0);
+
+  const handleStatusUpdated = useCallback((nextStatus: RepoStatusSummary) => {
+    sseCooldownUntilRef.current = Date.now() + 900;
+    setStatus(nextStatus);
+  }, []);
 
   const loadReposAndStatus = useCallback(async (preferredId?: string | null) => {
     setError(null);
@@ -104,6 +124,7 @@ export function App() {
 
   const refreshActiveRepo = useCallback(async () => {
     if (!activeRepoId) return;
+    sseCooldownUntilRef.current = Date.now() + 900;
     setRefreshing(true);
     try {
       const nextStatus = await api.getStatus(activeRepoId);
@@ -147,16 +168,22 @@ export function App() {
       ? `/api/repos/${encodeURIComponent(activeRepoId)}/events?token=${encodeURIComponent(token)}`
       : `/api/repos/${encodeURIComponent(activeRepoId)}/events`;
 
+    let inflight = false;
     const es = new EventSource(url, { withCredentials: true });
     es.addEventListener('connected', () => setSseConnected(true));
     es.addEventListener('repo-changed', () => {
+      if (inflight || sseCooldownUntilRef.current > Date.now()) return;
+      inflight = true;
       void api
         .getStatus(activeRepoId)
         .then((next) => {
           setStatus(next);
           setRefreshTick((t) => t + 1);
         })
-        .catch(() => {});
+        .catch(() => {})
+        .finally(() => {
+          inflight = false;
+        });
     });
     es.onerror = () => setSseConnected(false);
 
@@ -395,18 +422,21 @@ export function App() {
             <p className="mt-3 text-sm text-[#8b949e]">Scanning local repositories...</p>
           </div>
         ) : !status ? (
-          <div className="mx-auto mt-8 max-w-md rounded-2xl border border-[#30363d] bg-[#161b22] p-6 text-center">
+          <div className="mx-auto mt-8 max-w-lg rounded-2xl border border-[#30363d] bg-[#161b22] p-6 text-center">
             <FolderGit2 className="mx-auto h-10 w-10 text-sky-400" />
             <h2 className="mt-3 text-base font-semibold text-[#e6edf3]">
               Add your first Git repository
             </h2>
             <p className="mt-1 text-xs leading-relaxed text-[#8b949e]">
-              Paste the local path of any project containing a <code>.git</code> folder to start viewing unstaged, staged, and pushed diffs from your phone.
+              Click <strong>Browse</strong> or paste the local path of any project containing a <code>.git</code> folder to start viewing unstaged, staged, and pushed diffs from your phone.
             </p>
             <form
               onSubmit={(e) => {
                 e.preventDefault();
-                if (quickRepoPath.trim()) void handleAddRepo(quickRepoPath.trim());
+                if (quickRepoPath.trim()) {
+                  setQuickBrowseOpen(false);
+                  void handleAddRepo(quickRepoPath.trim());
+                }
               }}
               className="mt-4 flex flex-col gap-2 sm:flex-row"
             >
@@ -417,14 +447,44 @@ export function App() {
                 placeholder="C:\Users\name\projects\my-repo"
                 className="min-w-0 flex-1 rounded-xl border border-[#30363d] bg-[#0d1117] px-3 py-2.5 text-sm text-[#e6edf3] placeholder-[#484f58] focus:border-sky-500 focus:outline-none"
               />
-              <button
-                type="submit"
-                disabled={!quickRepoPath.trim()}
-                className="rounded-xl bg-sky-600 px-4 py-2.5 text-sm font-semibold text-white hover:bg-sky-500 disabled:opacity-50"
-              >
-                Open Repo
-              </button>
+              <div className="flex shrink-0 gap-2">
+                <button
+                  type="button"
+                  onClick={() => setQuickBrowseOpen((prev) => !prev)}
+                  aria-expanded={quickBrowseOpen}
+                  className={`inline-flex flex-1 items-center justify-center gap-1.5 rounded-xl border px-3.5 py-2.5 text-sm font-medium transition sm:flex-none ${
+                    quickBrowseOpen
+                      ? 'border-sky-500/60 bg-sky-500/15 text-sky-300'
+                      : 'border-[#30363d] bg-[#21262d] text-[#e6edf3] hover:border-[#484f58] hover:bg-[#30363d]/70'
+                  }`}
+                >
+                  <FolderSearch className="h-4 w-4" />
+                  Browse
+                </button>
+                <button
+                  type="submit"
+                  disabled={!quickRepoPath.trim()}
+                  className="flex-1 rounded-xl bg-sky-600 px-4 py-2.5 text-sm font-semibold text-white hover:bg-sky-500 disabled:opacity-50 sm:flex-none"
+                >
+                  Open Repo
+                </button>
+              </div>
             </form>
+            {quickBrowseOpen && (
+              <div className="mt-4">
+                <Suspense fallback={null}>
+                  <FolderBrowser
+                    initialPath={quickRepoPath.trim() || undefined}
+                    registeredPaths={repos.map((r) => r.path)}
+                    onSelectPath={(selectedPath) => {
+                      setQuickRepoPath(selectedPath);
+                      setQuickBrowseOpen(false);
+                    }}
+                    onClose={() => setQuickBrowseOpen(false)}
+                  />
+                </Suspense>
+              </div>
+            )}
           </div>
         ) : (
           <>
@@ -433,30 +493,46 @@ export function App() {
                 repoId={status.repo.id}
                 status={status}
                 refreshTick={refreshTick}
-                onStatusUpdated={setStatus}
+                onStatusUpdated={handleStatusUpdated}
                 onCommitted={() => setRefreshTick((t) => t + 1)}
               />
             )}
             {tab === 'history' && (
-              <HistoryTab
-                repoId={status.repo.id}
-                status={status}
-                refreshTick={refreshTick}
-                onStatusUpdated={setStatus}
-              />
+              <Suspense
+                fallback={
+                  <div className="rounded-2xl border border-[#30363d] bg-[#161b22] p-8 text-center text-sm text-[#8b949e]">
+                    Loading history...
+                  </div>
+                }
+              >
+                <HistoryTab
+                  repoId={status.repo.id}
+                  status={status}
+                  refreshTick={refreshTick}
+                  onStatusUpdated={handleStatusUpdated}
+                />
+              </Suspense>
             )}
             {tab === 'branches' && (
-              <BranchesTab
-                branches={branches}
-                loading={branchesLoading}
-                onRefresh={() => void loadBranches()}
-                onCheckout={async (branch, create) => {
-                  const res = await api.checkoutBranch(status.repo.id, branch, create);
-                  setStatus(res.status);
-                  setRefreshTick((t) => t + 1);
-                  await loadBranches();
-                }}
-              />
+              <Suspense
+                fallback={
+                  <div className="rounded-2xl border border-[#30363d] bg-[#161b22] p-8 text-center text-sm text-[#8b949e]">
+                    Loading branches...
+                  </div>
+                }
+              >
+                <BranchesTab
+                  branches={branches}
+                  loading={branchesLoading}
+                  onRefresh={() => void loadBranches()}
+                  onCheckout={async (branch, create) => {
+                    const res = await api.checkoutBranch(status.repo.id, branch, create);
+                    setStatus(res.status);
+                    setRefreshTick((t) => t + 1);
+                    await loadBranches();
+                  }}
+                />
+              </Suspense>
             )}
           </>
         )}
@@ -516,21 +592,29 @@ export function App() {
         </nav>
       )}
 
-      <RepoModal
-        open={repoModalOpen}
-        repos={repos}
-        activeRepoId={activeRepoId}
-        onSelect={(id) => void handleSelectRepo(id)}
-        onAdd={handleAddRepo}
-        onRemove={handleRemoveRepo}
-        onClose={() => setRepoModalOpen(false)}
-      />
+      {repoModalOpen && (
+        <Suspense fallback={null}>
+          <RepoModal
+            open={repoModalOpen}
+            repos={repos}
+            activeRepoId={activeRepoId}
+            onSelect={(id) => void handleSelectRepo(id)}
+            onAdd={handleAddRepo}
+            onRemove={handleRemoveRepo}
+            onClose={() => setRepoModalOpen(false)}
+          />
+        </Suspense>
+      )}
 
-      <ConnectModal
-        open={connectModalOpen}
-        network={networkInfo}
-        onClose={() => setConnectModalOpen(false)}
-      />
+      {connectModalOpen && (
+        <Suspense fallback={null}>
+          <ConnectModal
+            open={connectModalOpen}
+            network={networkInfo}
+            onClose={() => setConnectModalOpen(false)}
+          />
+        </Suspense>
+      )}
     </div>
   );
 }

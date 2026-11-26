@@ -164,3 +164,23 @@ export interface ServerNetworkInfo {
   pairingQrSvg: string;
   avoidsPrivilegedPorts: boolean;
 }
+
+export interface DirectoryQuickRoot {
+  label: string;
+  path: string;
+}
+
+export interface DirectoryBrowseEntry {
+  name: string;
+  path: string;
+  isGitRepo: boolean;
+}
+
+export interface DirectoryBrowseResponse {
+  currentPath: string;
+  parentPath: string | null;
+  currentIsGitRepo: boolean;
+  entries: DirectoryBrowseEntry[];
+  roots: DirectoryQuickRoot[];
+  truncated?: boolean;
+}

@@ -20,7 +20,7 @@ import type {
 } from '../../shared/types.ts';
 import { api } from '../api.ts';
 import { MobileDiffViewer } from './MobileDiffViewer.tsx';
-import { FileStatusBadge, PushStateBadge } from './StatusBadge.tsx';
+import { CommitTypeBadge, FileStatusBadge, PushStateBadge } from './StatusBadge.tsx';
 
 interface HistoryTabProps {
   repoId: string;
@@ -66,18 +66,34 @@ export function HistoryTab({ repoId, status, refreshTick, onStatusUpdated }: His
   useEffect(() => {
     setSelectedCommitSha(null);
     setCommitDetail(null);
+    setDetailLoading(false);
     setSelectedFilePath(null);
     setDiff(null);
+    setDiffError(null);
+    setDiffLoading(false);
     setVerifyResult(null);
+  }, [repoId]);
+
+  useEffect(() => {
     void loadCommits(0, false);
   }, [repoId, refreshTick]);
 
   useEffect(() => {
-    if (!selectedCommitSha) return;
+    if (!selectedCommitSha) {
+      setCommitDetail(null);
+      setDetailLoading(false);
+      setSelectedFilePath(null);
+      setDiff(null);
+      setDiffError(null);
+      setDiffLoading(false);
+      return;
+    }
     let cancelled = false;
     setDetailLoading(true);
     setSelectedFilePath(null);
     setDiff(null);
+    setDiffError(null);
+    setDiffLoading(false);
     api
       .getCommitDetail(repoId, selectedCommitSha)
       .then((res) => {
@@ -97,8 +113,14 @@ export function HistoryTab({ repoId, status, refreshTick, onStatusUpdated }: His
   }, [repoId, selectedCommitSha]);
 
   useEffect(() => {
-    if (!selectedCommitSha || !selectedFilePath) return;
+    if (!selectedCommitSha || !selectedFilePath) {
+      setDiff(null);
+      setDiffError(null);
+      setDiffLoading(false);
+      return;
+    }
     let cancelled = false;
+    setDiff(null);
     setDiffLoading(true);
     setDiffError(null);
     api
@@ -394,6 +416,7 @@ export function HistoryTab({ repoId, status, refreshTick, onStatusUpdated }: His
                             state={commit.pushState}
                             remoteRef={commit.pushedToRefs[0]}
                           />
+                          <CommitTypeBadge subject={commit.subject} />
                           <span className="font-mono text-[11px] text-[#6e7681]">
                             {commit.shortSha}
                           </span>
@@ -466,6 +489,7 @@ export function HistoryTab({ repoId, status, refreshTick, onStatusUpdated }: His
                             state={commitDetail.commit.pushState}
                             remoteRef={commitDetail.commit.pushedToRefs[0]}
                           />
+                          <CommitTypeBadge subject={commitDetail.commit.subject} />
                           <span className="font-mono text-xs text-[#8b949e]">
                             {commitDetail.commit.shortSha}
                           </span>
@@ -535,7 +559,7 @@ export function HistoryTab({ repoId, status, refreshTick, onStatusUpdated }: His
                 {selectedFilePath && (
                   <MobileDiffViewer
                     diff={diff}
-                    loading={diffLoading}
+                    loading={Boolean(selectedFilePath) && diffLoading}
                     error={diffError}
                     contextLines={contextLines}
                     onChangeContextLines={setContextLines}

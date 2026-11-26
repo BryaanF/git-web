@@ -8,7 +8,8 @@ import { serveStatic } from '@hono/node-server/serve-static';
 import { Hono } from 'hono';
 import { setCookie } from 'hono/cookie';
 import { streamSSE } from 'hono/streaming';
-import { createAuthManager } from './auth.ts';
+import { createAuthManager, type AuthManager } from './auth.ts';
+import { browseDirectories } from './fs/browse.ts';
 import { GitCommandError } from './git/runner.ts';
 import {
   checkoutBranch,
@@ -192,101 +193,28 @@ function parseErrorPayload(err: unknown): { status: 400 | 404 | 500; message: st
   return { status: 500, message: 'Unexpected server error' };
 }
 
-export async function startServer() {
-  const cli = parseCliArgs(process.argv.slice(2));
+export interface CreateAppOptions {
+  repoStore: RepoStore;
+  auth: AuthManager;
+  port: number;
+  host: string;
+  clientPort?: number | null;
+  tailscalePort?: number | null;
+  distClientDir?: string;
+  hasBuiltClient?: boolean;
+}
 
-  if (cli.help) {
-    printServerHelp();
-    process.exit(0);
-  }
-
-  let effectivePortSpec = cli.portSpec;
-  let effectiveTailscalePort = cli.tailscalePort;
-
-  if (cli.interactive) {
-    const session = createPromptSession();
-    try {
-      console.log('\n==============================================================');
-      console.log('  GitDock Web Server — Interactive Port Selector');
-      console.log('==============================================================');
-      const serverChoice = await promptServicePort(session, {
-        title: 'Service: server (Backend API & Git Engine)',
-        defaultSpec: cli.portSpec,
-        suggestedPorts: [7745, 7746, 8000, 8080, 8888, 9000],
-        host: cli.host,
-        allowPrivileged: cli.allowPrivilegedPort,
-        strict: cli.strictPort,
-        allowOff: false,
-      });
-      effectivePortSpec = String(serverChoice.port ?? cli.portSpec);
-
-      const tsChoice = await promptServicePort(session, {
-        title: 'Companion: tailscale serve HTTPS port',
-        defaultSpec: effectiveTailscalePort === null ? 'off' : String(effectiveTailscalePort),
-        suggestedPorts: [8443, 8444, 9443],
-        host: cli.host,
-        allowPrivileged: cli.allowPrivilegedPort,
-        strict: false,
-        allowOff: true,
-      });
-      effectiveTailscalePort = tsChoice.port;
-    } finally {
-      session.close();
-    }
-  } else {
-    const parsedSpec = parsePortSpec(effectivePortSpec);
-    if (
-      !cli.allowPrivilegedPort &&
-      parsedSpec.mode === 'candidates' &&
-      parsedSpec.candidates.every((p) => PRIVILEGED_WEB_PORTS.has(p))
-    ) {
-      console.warn(
-        `[GitDock] Refusing privileged port "${effectivePortSpec}" to avoid colliding with local web services (80/443). Selecting safe port near ${DEFAULT_PORT}...`,
-      );
-      effectivePortSpec = String(DEFAULT_PORT);
-    }
-  }
-
-  const projectRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
-  const distClientDir = path.join(projectRoot, 'dist', 'client');
-  const distIndexHtml = path.join(distClientDir, 'index.html');
-  let hasBuiltClient = fs.existsSync(distIndexHtml);
-
-  if (cli.forceBuild || (cli.ensureBuild && !hasBuiltClient)) {
-    const viteBinPath = path.resolve(projectRoot, 'node_modules', 'vite', 'bin', 'vite.js');
-    if (!fs.existsSync(viteBinPath)) {
-      throw new Error('Cannot auto-build client: Vite binary not found in node_modules. Run npm install.');
-    }
-    console.log(
-      cli.forceBuild
-        ? '[GitDock] Rebuilding production client bundle...'
-        : '[GitDock] dist/client not found — building production client bundle...',
-    );
-    execFileSync(process.execPath, [viteBinPath, 'build'], {
-      cwd: projectRoot,
-      stdio: 'inherit',
-    });
-    hasBuiltClient = fs.existsSync(distIndexHtml);
-  }
-
-  const repoStore = new RepoStore(projectRoot);
-  await repoStore.init(cli.repoPaths);
-
-  const auth = await createAuthManager(projectRoot, {
-    disabled: cli.noAuth,
-    explicitToken: process.env.GITWEB_TOKEN,
-  });
-
-  const resolvedPort = await resolvePortSpec(effectivePortSpec, {
-    host: cli.host,
-    strict: cli.strictPort,
-    allowPrivileged: cli.allowPrivilegedPort,
-    fallbackPort: DEFAULT_PORT,
-  });
-  if (resolvedPort === null) {
-    throw new Error('Server port cannot be disabled ("off") when starting the server directly.');
-  }
-  const port = resolvedPort;
+export function createGitDockApp(options: CreateAppOptions): Hono {
+  const {
+    repoStore,
+    auth,
+    port,
+    host,
+    clientPort = null,
+    tailscalePort = DEFAULT_TAILSCALE_PORT,
+    distClientDir = '',
+    hasBuiltClient = false,
+  } = options;
   const app = new Hono();
 
   app.use('/api/*', auth.middleware);
@@ -295,8 +223,8 @@ export async function startServer() {
     return c.json({
       ok: true,
       port,
-      clientPort: cli.clientPort,
-      tailscalePort: effectiveTailscalePort,
+      clientPort,
+      tailscalePort,
       authEnabled: auth.enabled,
       avoidsPrivilegedPorts: !PRIVILEGED_WEB_PORTS.has(port),
     });
@@ -325,11 +253,24 @@ export async function startServer() {
   });
 
   app.get('/api/network', async (c) => {
-    const info = await buildNetworkInfo(port, cli.host, auth.enabled, auth.token, {
-      tailscalePort: effectiveTailscalePort,
-      clientPort: cli.clientPort,
+    const info = await buildNetworkInfo(port, host, auth.enabled, auth.token, {
+      tailscalePort,
+      clientPort,
     });
     return c.json(info);
+  });
+
+  app.get('/api/fs/browse', async (c) => {
+    try {
+      const requestedPath = c.req.query('path');
+      const showHidden = c.req.query('hidden') === '1' || c.req.query('hidden') === 'true';
+      const nearest = c.req.query('nearest') === '1' || c.req.query('nearest') === 'true';
+      const data = await browseDirectories(requestedPath, { showHidden, nearest });
+      return c.json(data);
+    } catch (err) {
+      const parsed = parseErrorPayload(err);
+      return c.json({ error: parsed.message }, parsed.status);
+    }
   });
 
   app.get('/api/repos', (c) => {
@@ -380,15 +321,17 @@ export async function startServer() {
       const repo = resolveRepo(c.req.param('id'));
       const filePath = c.req.query('path') ?? '';
       const sectionRaw = c.req.query('section') ?? 'unstaged';
+      const hintRaw = c.req.query('hint');
       const context = Number.parseInt(c.req.query('context') ?? '3', 10) || 3;
       const section =
         sectionRaw === 'staged' || sectionRaw === 'conflicted' ? sectionRaw : 'unstaged';
+      const hint = hintRaw === 'untracked' ? 'untracked' : undefined;
 
       if (!filePath) {
         return c.json({ error: 'Query parameter "path" is required' }, 400);
       }
 
-      const diff = await getWorkingFileDiff(repo.path, filePath, section, context);
+      const diff = await getWorkingFileDiff(repo.path, filePath, section, context, hint);
       return c.json(diff);
     } catch (err) {
       const parsed = parseErrorPayload(err);
@@ -584,20 +527,53 @@ export async function startServer() {
         timer = setTimeout(() => {
           if (closed) return;
           void stream.writeSSE({ event: 'repo-changed', data: String(Date.now()) }).catch(() => {});
-        }, 350);
+        }, 500);
+      };
+
+      const shouldIgnoreWatchPath = (rawName: string | null): boolean => {
+        if (!rawName) return false;
+        const rel = rawName.replace(/\\/g, '/').replace(/^\.\//, '');
+        if (!rel) return true;
+        if (
+          rel === 'node_modules' ||
+          rel.startsWith('node_modules/') ||
+          rel.includes('/node_modules/') ||
+          rel === 'dist' ||
+          rel.startsWith('dist/') ||
+          rel === '.vite' ||
+          rel.startsWith('.vite/') ||
+          rel === '.gitweb-repos.json' ||
+          rel === '.gitweb-auth.json' ||
+          rel.endsWith('.lock') ||
+          rel.endsWith('.tmp') ||
+          rel.endsWith('.swp') ||
+          rel.endsWith('~')
+        ) {
+          return true;
+        }
+        if (rel === '.git' || rel.startsWith('.git/')) {
+          const gitSub = rel === '.git' ? '' : rel.slice(5);
+          if (!gitSub) return true;
+          if (
+            gitSub === 'HEAD' ||
+            gitSub === 'index' ||
+            gitSub === 'MERGE_HEAD' ||
+            gitSub === 'REBASE_HEAD' ||
+            gitSub === 'CHERRY_PICK_HEAD' ||
+            gitSub.startsWith('refs/')
+          ) {
+            return false;
+          }
+          return true;
+        }
+        return false;
       };
 
       const safeWatch = (target: string, recursive: boolean) => {
         try {
           if (!fs.existsSync(target)) return;
           const watcher = fs.watch(target, { recursive }, (_eventType, filename) => {
-            if (
-              filename &&
-              (filename.includes('node_modules') ||
-                filename.includes('.git' + path.sep + 'objects') ||
-                filename.includes('.git/objects') ||
-                filename.endsWith('.lock'))
-            ) {
+            if (shouldIgnoreWatchPath(filename ? String(filename) : null)) {
               return;
             }
             notifyChange();
@@ -609,8 +585,9 @@ export async function startServer() {
       };
 
       safeWatch(repo.path, true);
-      safeWatch(path.join(repo.path, '.git', 'refs'), true);
-      safeWatch(path.join(repo.path, '.git'), false);
+      if (process.platform === 'linux') {
+        safeWatch(path.join(repo.path, '.git', 'refs'), true);
+      }
 
       const keepAlive = setInterval(() => {
         if (closed) return;
@@ -637,7 +614,7 @@ export async function startServer() {
     });
   });
 
-  if (hasBuiltClient) {
+  if (hasBuiltClient && distClientDir) {
     const relRoot = path.relative(process.cwd(), distClientDir) || '.';
     app.use('/*', serveStatic({ root: relRoot }));
     app.get('*', async (c) => {
@@ -646,7 +623,7 @@ export async function startServer() {
     });
   } else {
     app.get('/', (c) => {
-      const devHintPort = cli.clientPort ?? 5173;
+      const devHintPort = clientPort ?? 5173;
       return c.html(`
         <html><body style="font-family:system-ui;background:#0d1117;color:#e6edf3;padding:2rem;">
           <h2>GitDock Web API is running on port ${port}</h2>
@@ -655,6 +632,115 @@ export async function startServer() {
       `);
     });
   }
+
+  return app;
+}
+
+export async function startServer() {
+  const cli = parseCliArgs(process.argv.slice(2));
+
+  if (cli.help) {
+    printServerHelp();
+    process.exit(0);
+  }
+
+  let effectivePortSpec = cli.portSpec;
+  let effectiveTailscalePort = cli.tailscalePort;
+
+  if (cli.interactive) {
+    const session = createPromptSession();
+    try {
+      console.log('\n==============================================================');
+      console.log('  GitDock Web Server — Interactive Port Selector');
+      console.log('==============================================================');
+      const serverChoice = await promptServicePort(session, {
+        title: 'Service: server (Backend API & Git Engine)',
+        defaultSpec: cli.portSpec,
+        suggestedPorts: [7745, 7746, 8000, 8080, 8888, 9000],
+        host: cli.host,
+        allowPrivileged: cli.allowPrivilegedPort,
+        strict: cli.strictPort,
+        allowOff: false,
+      });
+      effectivePortSpec = String(serverChoice.port ?? cli.portSpec);
+
+      const tsChoice = await promptServicePort(session, {
+        title: 'Companion: tailscale serve HTTPS port',
+        defaultSpec: effectiveTailscalePort === null ? 'off' : String(effectiveTailscalePort),
+        suggestedPorts: [8443, 8444, 9443],
+        host: cli.host,
+        allowPrivileged: cli.allowPrivilegedPort,
+        strict: false,
+        allowOff: true,
+      });
+      effectiveTailscalePort = tsChoice.port;
+    } finally {
+      session.close();
+    }
+  } else {
+    const parsedSpec = parsePortSpec(effectivePortSpec);
+    if (
+      !cli.allowPrivilegedPort &&
+      parsedSpec.mode === 'candidates' &&
+      parsedSpec.candidates.every((p) => PRIVILEGED_WEB_PORTS.has(p))
+    ) {
+      console.warn(
+        `[GitDock] Refusing privileged port "${effectivePortSpec}" to avoid colliding with local web services (80/443). Selecting safe port near ${DEFAULT_PORT}...`,
+      );
+      effectivePortSpec = String(DEFAULT_PORT);
+    }
+  }
+
+  const projectRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
+  const distClientDir = path.join(projectRoot, 'dist', 'client');
+  const distIndexHtml = path.join(distClientDir, 'index.html');
+  let hasBuiltClient = fs.existsSync(distIndexHtml);
+
+  if (cli.forceBuild || (cli.ensureBuild && !hasBuiltClient)) {
+    const viteBinPath = path.resolve(projectRoot, 'node_modules', 'vite', 'bin', 'vite.js');
+    if (!fs.existsSync(viteBinPath)) {
+      throw new Error('Cannot auto-build client: Vite binary not found in node_modules. Run npm install.');
+    }
+    console.log(
+      cli.forceBuild
+        ? '[GitDock] Rebuilding production client bundle...'
+        : '[GitDock] dist/client not found — building production client bundle...',
+    );
+    execFileSync(process.execPath, [viteBinPath, 'build'], {
+      cwd: projectRoot,
+      stdio: 'inherit',
+    });
+    hasBuiltClient = fs.existsSync(distIndexHtml);
+  }
+
+  const repoStore = new RepoStore(projectRoot);
+  await repoStore.init(cli.repoPaths);
+
+  const auth = await createAuthManager(projectRoot, {
+    disabled: cli.noAuth,
+    explicitToken: process.env.GITWEB_TOKEN,
+  });
+
+  const resolvedPort = await resolvePortSpec(effectivePortSpec, {
+    host: cli.host,
+    strict: cli.strictPort,
+    allowPrivileged: cli.allowPrivilegedPort,
+    fallbackPort: DEFAULT_PORT,
+  });
+  if (resolvedPort === null) {
+    throw new Error('Server port cannot be disabled ("off") when starting the server directly.');
+  }
+  const port = resolvedPort;
+  const app = createGitDockApp({
+    repoStore,
+    auth,
+    port,
+    host: cli.host,
+    clientPort: cli.clientPort,
+    tailscalePort: effectiveTailscalePort,
+    distClientDir,
+    hasBuiltClient,
+  });
 
   let server!: ReturnType<typeof serve>;
   await new Promise<void>((resolve, reject) => {

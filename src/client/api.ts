@@ -3,6 +3,7 @@ import type {
   CommitDetail,
   CommitHistoryResponse,
   DiffPayload,
+  DirectoryBrowseResponse,
   RemoteVerifyResult,
   RepoEntry,
   RepoStatusSummary,
@@ -81,6 +82,15 @@ export const api = {
 
   getNetworkInfo: () => requestJson<ServerNetworkInfo>('/api/network'),
 
+  browseDirectories: (options: { path?: string; showHidden?: boolean; nearest?: boolean } = {}) => {
+    const params = new URLSearchParams();
+    if (options.path) params.set('path', options.path);
+    if (options.showHidden) params.set('hidden', '1');
+    if (options.nearest) params.set('nearest', '1');
+    const qs = params.toString();
+    return requestJson<DirectoryBrowseResponse>(`/api/fs/browse${qs ? `?${qs}` : ''}`);
+  },
+
   listRepos: () => requestJson<{ repos: RepoEntry[] }>('/api/repos'),
 
   addRepo: (repoPath: string) =>
@@ -100,9 +110,10 @@ export const api = {
     filePath: string,
     section: 'unstaged' | 'staged' | 'conflicted',
     context = 3,
+    hint?: 'untracked',
   ) =>
     requestJson<DiffPayload>(
-      `/api/repos/${encodeURIComponent(repoId)}/diff?path=${encodeURIComponent(filePath)}&section=${section}&context=${context}`,
+      `/api/repos/${encodeURIComponent(repoId)}/diff?path=${encodeURIComponent(filePath)}&section=${section}&context=${context}${hint ? `&hint=${encodeURIComponent(hint)}` : ''}`,
     ),
 
   stageFiles: (repoId: string, paths?: string[]) =>
