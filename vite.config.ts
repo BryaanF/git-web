@@ -43,5 +43,30 @@ export default defineConfig({
   build: {
     outDir: 'dist/client',
     emptyOutDir: true,
+    rolldownOptions: {
+      output: {
+        codeSplitting: {
+          groups: [
+            {
+              name: 'react-vendor',
+              test: /node_modules[\\/](react|react-dom|scheduler)/,
+              priority: 30,
+            },
+            {
+              name: 'syntax-vendor',
+              test: /node_modules[\\/](highlight\.js|lowlight)/,
+              priority: 20,
+              minSize: 40 * 1024,
+              maxSize: 420 * 1024,
+            },
+            {
+              name: 'diff-vendor',
+              test: /node_modules[\\/]@git-diff-view/,
+              priority: 10,
+            },
+          ],
+        },
+      },
+    },
   },
 });

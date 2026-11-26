@@ -19,7 +19,7 @@ import {
   parseStatusPorcelainV2Z,
   parseUnifiedPatch,
 } from './parsers.ts';
-import { GitCommandError, runGit } from './runner.ts';
+import { GitCommandError, runGit, runGitBinaryWithInput } from './runner.ts';
 
 const MAX_READ_BYTES = 512 * 1024;
 const MAX_CONTENT_BYTES = 180 * 1024;
@@ -53,15 +53,83 @@ function looksBinary(buffer: Buffer): boolean {
 }
 
 async function readGitBlob(repoPath: string, spec: string): Promise<string | undefined> {
-  const res = await runGit(repoPath, ['cat-file', '-s', spec], { allowNonZeroExit: true });
-  if (res.exitCode !== 0) return undefined;
-  const size = Number.parseInt(res.stdout.trim(), 10);
-  if (!Number.isFinite(size) || size > MAX_CONTENT_BYTES) return undefined;
+  try {
+    const contentRes = await runGit(repoPath, ['cat-file', 'blob', spec], {
+      allowNonZeroExit: true,
+      readOnly: true,
+      maxBuffer: MAX_CONTENT_BYTES + 16_384,
+    });
+    if (contentRes.exitCode !== 0) return undefined;
+    if (Buffer.byteLength(contentRes.stdout, 'utf8') > MAX_CONTENT_BYTES) return undefined;
+    if (contentRes.stdout.includes('\0')) return undefined;
+    return contentRes.stdout;
+  } catch {
+    return undefined;
+  }
+}
 
-  const contentRes = await runGit(repoPath, ['show', spec], { allowNonZeroExit: true });
-  if (contentRes.exitCode !== 0) return undefined;
-  if (contentRes.stdout.includes('\0')) return undefined;
-  return contentRes.stdout;
+async function readGitBlobsBatch(repoPath: string, specs: string[]): Promise<Array<string | undefined>> {
+  if (specs.length === 0) return [];
+  try {
+    const out = await runGitBinaryWithInput(
+      repoPath,
+      ['cat-file', '--batch'],
+      `${specs.join('\n')}\n`,
+      {
+        readOnly: true,
+        maxOutputBytes: specs.length * MAX_CONTENT_BYTES + 65_536,
+      },
+    );
+
+    const results: Array<string | undefined> = [];
+    let offset = 0;
+
+    for (let i = 0; i < specs.length; i += 1) {
+      if (offset >= out.length) {
+        results.push(undefined);
+        continue;
+      }
+      const nlIdx = out.indexOf(0x0a, offset);
+      if (nlIdx < 0) {
+        results.push(undefined);
+        break;
+      }
+      const header = out.subarray(offset, nlIdx).toString('utf8').replace(/\r$/, '');
+      offset = nlIdx + 1;
+
+      if (header.endsWith(' missing') || header.endsWith(' ambiguous')) {
+        results.push(undefined);
+        continue;
+      }
+
+      const match = header.match(/^[0-9a-f]{40,64}\s+(\S+)\s+(\d+)$/i);
+      if (!match) {
+        results.push(undefined);
+        break;
+      }
+
+      const objType = match[1];
+      const byteSize = Number.parseInt(match[2], 10);
+      const endOffset = offset + byteSize;
+      if (!Number.isFinite(byteSize) || endOffset > out.length) {
+        results.push(undefined);
+        break;
+      }
+
+      const slice = out.subarray(offset, endOffset);
+      offset = endOffset + 1;
+
+      if (objType !== 'blob' || byteSize > MAX_CONTENT_BYTES || looksBinary(slice)) {
+        results.push(undefined);
+      } else {
+        results.push(slice.toString('utf8'));
+      }
+    }
+
+    return results;
+  } catch {
+    return specs.map(() => undefined);
+  }
 }
 
 async function readWorktreeText(repoPath: string, filePath: string): Promise<{ text?: string; isBinary: boolean; isTooLarge: boolean }> {
@@ -86,9 +154,12 @@ async function readWorktreeText(repoPath: string, filePath: string): Promise<{ t
 
 export async function validateGitRepo(candidatePath: string): Promise<{ rootPath: string; name: string; remoteUrl?: string }> {
   const resolved = path.resolve(candidatePath);
-  const topRes = await runGit(resolved, ['rev-parse', '--show-toplevel']);
+  const topRes = await runGit(resolved, ['rev-parse', '--show-toplevel'], { readOnly: true });
   const rootPath = path.resolve(topRes.stdout.trim());
-  const remoteRes = await runGit(rootPath, ['remote', 'get-url', 'origin'], { allowNonZeroExit: true });
+  const remoteRes = await runGit(rootPath, ['remote', 'get-url', 'origin'], {
+    allowNonZeroExit: true,
+    readOnly: true,
+  });
   return {
     rootPath,
     name: path.basename(rootPath) || rootPath,
@@ -96,19 +167,49 @@ export async function validateGitRepo(candidatePath: string): Promise<{ rootPath
   };
 }
 
+async function readLocalRemoteNamesFast(repoPath: string): Promise<string[] | null> {
+  try {
+    const config = await fs.readFile(path.join(repoPath, '.git', 'config'), 'utf8');
+    // Fall back to `git remote` when conditional includes are present.
+    if (/^\s*\[include(?:If)?\b/im.test(config)) {
+      return null;
+    }
+    const remotes: string[] = [];
+    for (const line of config.split(/\r?\n/)) {
+      const match = line.match(/^\s*\[remote\s+"([^"]+)"\]\s*(?:[#;].*)?$/);
+      if (match) {
+        remotes.push(match[1]);
+      }
+    }
+    return remotes;
+  } catch {
+    return null;
+  }
+}
+
 export async function getRepoStatus(repo: RepoEntry): Promise<RepoStatusSummary> {
-  const [statusRes, remotesRes] = await Promise.all([
-    runGit(repo.path, ['status', '--porcelain=v2', '--branch', '-z']),
-    runGit(repo.path, ['remote']),
-  ]);
+  const statusRes = await runGit(
+    repo.path,
+    ['status', '--porcelain=v2', '--branch', '-z'],
+    { readOnly: true },
+  );
 
   const parsed = parseStatusPorcelainV2Z(statusRes.stdout);
-  const remotes = remotesRes.stdout
-    .split(/\r?\n/)
-    .map((line) => line.trim())
-    .filter(Boolean);
+  let hasRemote = Boolean(parsed.upstream);
+  let remoteName = parsed.upstream ? parsed.upstream.split('/')[0] : null;
 
-  const remoteName = parsed.upstream ? parsed.upstream.split('/')[0] : (remotes[0] ?? null);
+  if (!parsed.upstream) {
+    let remotes = await readLocalRemoteNamesFast(repo.path);
+    if (remotes === null) {
+      const remotesRes = await runGit(repo.path, ['remote'], { readOnly: true });
+      remotes = remotesRes.stdout
+        .split(/\r?\n/)
+        .map((line) => line.trim())
+        .filter(Boolean);
+    }
+    hasRemote = remotes.length > 0;
+    remoteName = remotes[0] ?? null;
+  }
 
   return {
     repo,
@@ -118,7 +219,7 @@ export async function getRepoStatus(repo: RepoEntry): Promise<RepoStatusSummary>
     ahead: parsed.ahead,
     behind: parsed.behind,
     isDetached: parsed.isDetached,
-    hasRemote: remotes.length > 0,
+    hasRemote,
     remoteName,
     unstaged: parsed.unstaged,
     staged: parsed.staged,
@@ -127,11 +228,66 @@ export async function getRepoStatus(repo: RepoEntry): Promise<RepoStatusSummary>
   };
 }
 
+function buildUntrackedDiffPayload(
+  gitPath: string,
+  lang: string,
+  disk: { text?: string; isBinary: boolean; isTooLarge: boolean },
+): DiffPayload {
+  if (disk.isTooLarge) {
+    return {
+      path: gitPath,
+      patch: '',
+      hunks: [],
+      lang,
+      isBinary: false,
+      isTooLarge: true,
+      lineCount: 0,
+      additions: 0,
+      deletions: 0,
+      status: 'untracked',
+      note: 'Untracked file exceeds 512 KB preview limit.',
+    };
+  }
+  if (disk.isBinary) {
+    return {
+      path: gitPath,
+      patch: '',
+      hunks: [],
+      lang,
+      isBinary: true,
+      isTooLarge: false,
+      lineCount: 0,
+      additions: 0,
+      deletions: 0,
+      status: 'untracked',
+      note: 'Binary untracked file.',
+    };
+  }
+  const text = disk.text ?? '';
+  const patch = buildUntrackedUnifiedPatch(gitPath, text);
+  const parsed = parseUnifiedPatch(patch);
+  return {
+    path: gitPath,
+    patch,
+    hunks: parsed.hunks,
+    oldContent: '',
+    newContent: text.length <= MAX_CONTENT_BYTES ? text : undefined,
+    lang,
+    isBinary: false,
+    isTooLarge: false,
+    lineCount: parsed.lineCount,
+    additions: parsed.additions,
+    deletions: 0,
+    status: 'untracked',
+  };
+}
+
 export async function getWorkingFileDiff(
   repoPath: string,
   filePath: string,
   section: 'unstaged' | 'staged' | 'conflicted',
   contextLines = 3,
+  hintStatus?: 'untracked',
 ): Promise<DiffPayload> {
   assertSafeRepoPath(repoPath, filePath);
   const gitPath = toGitSlashPath(filePath);
@@ -139,22 +295,16 @@ export async function getWorkingFileDiff(
   const ctx = Math.max(0, Math.min(contextLines, 50));
 
   if (section === 'staged') {
-    const diffRes = await runGit(repoPath, [
-      'diff',
-      '--staged',
-      '--no-color',
-      '-M',
-      `--unified=${ctx}`,
-      '--',
-      gitPath,
+    const [diffRes, blobs] = await Promise.all([
+      runGit(
+        repoPath,
+        ['diff', '--staged', '--no-color', '-M', `--unified=${ctx}`, '--', gitPath],
+        { readOnly: true },
+      ),
+      readGitBlobsBatch(repoPath, [`HEAD:${gitPath}`, `:${gitPath}`]),
     ]);
+    const [oldContent, newContent] = blobs;
     const parsed = parseUnifiedPatch(diffRes.stdout);
-    const [oldContent, newContent] = parsed.isBinary
-      ? [undefined, undefined]
-      : await Promise.all([
-          readGitBlob(repoPath, `HEAD:${gitPath}`),
-          readGitBlob(repoPath, `:${gitPath}`),
-        ]);
 
     let status: FileChangeStatus = 'modified';
     if (diffRes.stdout.includes('\nnew file mode ')) status = 'added';
@@ -165,8 +315,8 @@ export async function getWorkingFileDiff(
       path: gitPath,
       patch: diffRes.stdout,
       hunks: parsed.hunks,
-      oldContent,
-      newContent,
+      oldContent: parsed.isBinary ? undefined : oldContent,
+      newContent: parsed.isBinary ? undefined : newContent,
       lang,
       isBinary: parsed.isBinary,
       isTooLarge: parsed.lineCount > 4500,
@@ -177,89 +327,41 @@ export async function getWorkingFileDiff(
     };
   }
 
-  // Check if file is untracked
-  const untrackedCheck = await runGit(repoPath, [
-    'ls-files',
-    '--others',
-    '--exclude-standard',
-    '--',
-    gitPath,
-  ]);
-  const isUntracked = untrackedCheck.stdout.trim().length > 0;
-
-  if (isUntracked) {
+  if (section === 'unstaged' && hintStatus === 'untracked') {
     const disk = await readWorktreeText(repoPath, gitPath);
-    if (disk.isTooLarge) {
-      return {
-        path: gitPath,
-        patch: '',
-        hunks: [],
-        lang,
-        isBinary: false,
-        isTooLarge: true,
-        lineCount: 0,
-        additions: 0,
-        deletions: 0,
-        status: 'untracked',
-        note: 'Untracked file exceeds 512 KB preview limit.',
-      };
-    }
-    if (disk.isBinary) {
-      return {
-        path: gitPath,
-        patch: '',
-        hunks: [],
-        lang,
-        isBinary: true,
-        isTooLarge: false,
-        lineCount: 0,
-        additions: 0,
-        deletions: 0,
-        status: 'untracked',
-        note: 'Binary untracked file.',
-      };
-    }
-    const text = disk.text ?? '';
-    const patch = buildUntrackedUnifiedPatch(gitPath, text);
-    const parsed = parseUnifiedPatch(patch);
-    return {
-      path: gitPath,
-      patch,
-      hunks: parsed.hunks,
-      oldContent: '',
-      newContent: text.length <= MAX_CONTENT_BYTES ? text : undefined,
-      lang,
-      isBinary: false,
-      isTooLarge: false,
-      lineCount: parsed.lineCount,
-      additions: parsed.additions,
-      deletions: 0,
-      status: 'untracked',
-    };
+    return buildUntrackedDiffPayload(gitPath, lang, disk);
   }
 
-  const diffRes = await runGit(repoPath, [
-    'diff',
-    '--no-color',
-    '-M',
-    `--unified=${ctx}`,
-    '--',
-    gitPath,
+  const [diffRes, indexBlob, disk] = await Promise.all([
+    runGit(
+      repoPath,
+      ['diff', '--no-color', '-M', `--unified=${ctx}`, '--', gitPath],
+      { readOnly: true },
+    ),
+    readGitBlob(repoPath, `:${gitPath}`),
+    readWorktreeText(repoPath, gitPath),
   ]);
-  const parsed = parseUnifiedPatch(diffRes.stdout);
 
-  let oldContent: string | undefined;
-  let newContent: string | undefined;
-  if (!parsed.isBinary) {
-    const [indexBlob, disk] = await Promise.all([
-      readGitBlob(repoPath, `:${gitPath}`),
-      readWorktreeText(repoPath, gitPath),
-    ]);
-    oldContent = indexBlob;
-    newContent = !disk.isBinary && !disk.isTooLarge && (disk.text?.length ?? 0) <= MAX_CONTENT_BYTES
+  if (!diffRes.stdout.trim() && indexBlob === undefined) {
+    const untrackedCheck = await runGit(
+      repoPath,
+      ['ls-files', '--others', '--exclude-standard', '--', gitPath],
+      { readOnly: true },
+    );
+    if (untrackedCheck.stdout.trim().length > 0) {
+      return buildUntrackedDiffPayload(gitPath, lang, disk);
+    }
+  }
+
+  const parsed = parseUnifiedPatch(diffRes.stdout);
+  const oldContent = !parsed.isBinary ? indexBlob : undefined;
+  const newContent =
+    !parsed.isBinary &&
+    !disk.isBinary &&
+    !disk.isTooLarge &&
+    (disk.text?.length ?? 0) <= MAX_CONTENT_BYTES
       ? disk.text
       : undefined;
-  }
 
   let status: FileChangeStatus = section === 'conflicted' ? 'conflicted' : 'modified';
   if (diffRes.stdout.includes('\ndeleted file mode ')) status = 'deleted';
@@ -344,15 +446,87 @@ export async function getCommitHistory(
   limit = 40,
   offset = 0,
 ): Promise<CommitHistoryResponse> {
-  const statusRes = await runGit(repoPath, ['status', '--porcelain=v2', '--branch', '-z']);
-  const status = parseStatusPorcelainV2Z(statusRes.stdout);
+  const prettyFormat = `%H${COMMIT_FIELD_SEP}%an${COMMIT_FIELD_SEP}%ae${COMMIT_FIELD_SEP}%aI${COMMIT_FIELD_SEP}%P${COMMIT_FIELD_SEP}%D${COMMIT_FIELD_SEP}%s${COMMIT_FIELD_SEP}%b${COMMIT_RECORD_SEP}`;
+  const fetchLimit = limit + 1;
+
+  const [refsRes, logRes] = await Promise.all([
+    runGit(
+      repoPath,
+      [
+        'for-each-ref',
+        '--format=%(HEAD)%09%(refname)%09%(refname:short)%09%(objectname)%09%(upstream:short)%09%(upstream:track,nobracket)',
+        'refs/heads',
+        'refs/remotes',
+      ],
+      { allowNonZeroExit: true, readOnly: true },
+    ),
+    runGit(
+      repoPath,
+      ['log', 'HEAD', `--max-count=${fetchLimit}`, `--skip=${offset}`, `--format=${prettyFormat}`],
+      { allowNonZeroExit: true, readOnly: true },
+    ),
+  ]);
+
+  let branch = 'HEAD';
+  let headSha: string | null = null;
+  let upstream: string | null = null;
+  let ahead = 0;
+  let behind = 0;
+  const allRemoteRefs: string[] = [];
+
+  for (const rawLine of refsRes.stdout.split(/\r?\n/)) {
+    if (!rawLine) continue;
+    const [headMark = '', fullRef = '', shortName = '', objSha = '', upstreamShort = '', trackText = ''] =
+      rawLine.split('\t');
+
+    if (fullRef.startsWith('refs/remotes/')) {
+      if (shortName && !shortName.endsWith('/HEAD')) {
+        allRemoteRefs.push(shortName);
+      }
+      continue;
+    }
+
+    if (headMark.trim() === '*' && fullRef.startsWith('refs/heads/')) {
+      branch = shortName || branch;
+      headSha = objSha || null;
+      upstream = upstreamShort || null;
+      const aheadMatch = trackText.match(/ahead\s+(\d+)/i);
+      const behindMatch = trackText.match(/behind\s+(\d+)/i);
+      ahead = aheadMatch ? Number.parseInt(aheadMatch[1], 10) : 0;
+      behind = behindMatch ? Number.parseInt(behindMatch[1], 10) : 0;
+    }
+  }
+
+  // Fallback for detached HEAD or unborn repo where no refs/heads/* matches *(HEAD)
+  if (!headSha && logRes.exitCode === 0 && logRes.stdout.trim()) {
+    const statusRes = await runGit(
+      repoPath,
+      ['status', '--porcelain=v2', '--branch', '--untracked-files=no', '-z'],
+      { readOnly: true },
+    );
+    const parsedStatus = parseStatusPorcelainV2Z(statusRes.stdout);
+    branch = parsedStatus.branch;
+    headSha = parsedStatus.headSha;
+    upstream = parsedStatus.upstream;
+    ahead = parsedStatus.ahead;
+    behind = parsedStatus.behind;
+  } else if (!headSha) {
+    // Unborn repo (no commits yet): extract symbolic branch name quickly if available
+    try {
+      const headFile = await fs.readFile(path.join(repoPath, '.git', 'HEAD'), 'utf8');
+      const refMatch = headFile.trim().match(/^ref:\s*refs\/heads\/(.+)$/);
+      if (refMatch) branch = refMatch[1];
+    } catch {
+      // Keep default 'HEAD'
+    }
+  }
 
   // Empty unborn repo guard
-  if (!status.headSha) {
+  if (!headSha || logRes.exitCode !== 0) {
     return {
       commits: [],
-      branch: status.branch,
-      upstream: status.upstream,
+      branch,
+      upstream,
       ahead: 0,
       behind: 0,
       hasMore: false,
@@ -361,28 +535,43 @@ export async function getCommitHistory(
 
   const unpushedSet = new Set<string>();
   const remoteOnlySet = new Set<string>();
+  let markAllUnpushed = false;
 
-  if (status.upstream) {
+  if (upstream) {
     const [aheadRes, behindRes] = await Promise.all([
-      runGit(repoPath, ['rev-list', `${status.upstream}..HEAD`], { allowNonZeroExit: true }),
-      runGit(repoPath, ['rev-list', `HEAD..${status.upstream}`], { allowNonZeroExit: true }),
+      ahead > 0
+        ? runGit(repoPath, ['rev-list', `${upstream}..HEAD`], {
+            allowNonZeroExit: true,
+            readOnly: true,
+          })
+        : Promise.resolve(null),
+      behind > 0
+        ? runGit(repoPath, ['rev-list', `HEAD..${upstream}`], {
+            allowNonZeroExit: true,
+            readOnly: true,
+          })
+        : Promise.resolve(null),
     ]);
 
-    if (aheadRes.exitCode === 0) {
+    if (aheadRes && aheadRes.exitCode === 0) {
       for (const sha of aheadRes.stdout.split(/\r?\n/)) {
         if (sha.trim()) unpushedSet.add(sha.trim());
       }
     }
-    if (behindRes.exitCode === 0) {
+    if (behindRes && behindRes.exitCode === 0) {
       for (const sha of behindRes.stdout.split(/\r?\n/)) {
         if (sha.trim()) remoteOnlySet.add(sha.trim());
       }
     }
+  } else if (allRemoteRefs.length === 0) {
+    // No remote tracking refs exist locally, so every commit in HEAD is unpushed
+    markAllUnpushed = true;
   } else {
     // No upstream tracking branch set on current branch:
     // Commits not reachable from ANY remote ref are unpushed!
     const localOnlyRes = await runGit(repoPath, ['rev-list', 'HEAD', '--not', '--remotes'], {
       allowNonZeroExit: true,
+      readOnly: true,
     });
     if (localOnlyRes.exitCode === 0) {
       for (const sha of localOnlyRes.stdout.split(/\r?\n/)) {
@@ -391,36 +580,14 @@ export async function getCommitHistory(
     }
   }
 
-  // Also grab remote refs list so commits on branches without upstream still show known remote presence
-  const remoteRefsRes = await runGit(
-    repoPath,
-    ['for-each-ref', 'refs/remotes', '--format=%(refname:short)'],
-    { allowNonZeroExit: true },
-  );
-  const allRemoteRefs = remoteRefsRes.stdout
-    .split(/\r?\n/)
-    .map((r) => r.trim())
-    .filter((r) => r && !r.endsWith('/HEAD'));
-
-  const prettyFormat = `%H${COMMIT_FIELD_SEP}%an${COMMIT_FIELD_SEP}%ae${COMMIT_FIELD_SEP}%aI${COMMIT_FIELD_SEP}%P${COMMIT_FIELD_SEP}%D${COMMIT_FIELD_SEP}%s${COMMIT_FIELD_SEP}%b${COMMIT_RECORD_SEP}`;
-
-  const fetchLimit = limit + 1;
-  const logRes = await runGit(repoPath, [
-    'log',
-    'HEAD',
-    `--max-count=${fetchLimit}`,
-    `--skip=${offset}`,
-    `--format=${prettyFormat}`,
-  ]);
-
   const headCommits = parseLogRecords(logRes.stdout, (sha) => {
-    const isUnpushed = unpushedSet.has(sha);
+    const isUnpushed = markAllUnpushed || unpushedSet.has(sha);
     return {
       pushState: isUnpushed ? 'unpushed' : 'pushed',
       pushedToRefs: isUnpushed
         ? []
-        : status.upstream
-          ? [status.upstream]
+        : upstream
+          ? [upstream]
           : allRemoteRefs.slice(0, 2),
     };
   });
@@ -430,25 +597,24 @@ export async function getCommitHistory(
 
   // On page 0, if remote has incoming commits not yet pulled, prepend them clearly!
   let remoteOnlyCommits: CommitSummary[] = [];
-  if (offset === 0 && status.upstream && remoteOnlySet.size > 0) {
-    const incomingRes = await runGit(repoPath, [
-      'log',
-      `HEAD..${status.upstream}`,
-      '--max-count=20',
-      `--format=${prettyFormat}`,
-    ]);
+  if (offset === 0 && upstream && remoteOnlySet.size > 0) {
+    const incomingRes = await runGit(
+      repoPath,
+      ['log', `HEAD..${upstream}`, '--max-count=20', `--format=${prettyFormat}`],
+      { readOnly: true },
+    );
     remoteOnlyCommits = parseLogRecords(incomingRes.stdout, () => ({
       pushState: 'remote_only',
-      pushedToRefs: status.upstream ? [status.upstream] : [],
+      pushedToRefs: upstream ? [upstream] : [],
     }));
   }
 
   return {
     commits: [...remoteOnlyCommits, ...slicedHeadCommits],
-    branch: status.branch,
-    upstream: status.upstream,
-    ahead: status.ahead,
-    behind: status.behind,
+    branch,
+    upstream,
+    ahead,
+    behind,
     hasMore,
   };
 }
@@ -464,8 +630,8 @@ export async function getCommitDetail(repoPath: string, sha: string): Promise<Co
     runGit(repoPath, ['show', '--no-patch', `--format=${prettyFormat}`, sha]),
     runGit(repoPath, ['diff-tree', '--no-commit-id', '--numstat', '-r', '-M', '--root', sha]),
     runGit(repoPath, ['diff-tree', '--no-commit-id', '--name-status', '-r', '-M', '--root', sha]),
-    runGit(repoPath, ['status', '--porcelain=v2', '--branch', '-z']),
-    runGit(repoPath, ['branch', '-r', '--contains', sha], { allowNonZeroExit: true }),
+    runGit(repoPath, ['status', '--porcelain=v2', '--branch', '-z'], { readOnly: true }),
+    runGit(repoPath, ['branch', '-r', '--contains', sha], { allowNonZeroExit: true, readOnly: true }),
   ]);
 
   const status = parseStatusPorcelainV2Z(statusRes.stdout);
@@ -527,17 +693,15 @@ export async function getCommitFileDiff(
   const lang = inferLanguageFromPath(gitPath);
   const ctx = Math.max(0, Math.min(contextLines, 50));
 
-  const diffRes = await runGit(repoPath, [
-    'show',
-    '--no-color',
-    '--format=',
-    '-M',
-    `--unified=${ctx}`,
-    '--root',
-    sha,
-    '--',
-    gitPath,
+  const [diffRes, commitBlobs] = await Promise.all([
+    runGit(
+      repoPath,
+      ['show', '--no-color', '--format=', '-M', `--unified=${ctx}`, '--root', sha, '--', gitPath],
+      { readOnly: true },
+    ),
+    readGitBlobsBatch(repoPath, [`${sha}^:${gitPath}`, `${sha}:${gitPath}`]),
   ]);
+  const [oldBlob, newBlob] = commitBlobs;
   const parsed = parseUnifiedPatch(diffRes.stdout);
 
   let status: FileChangeStatus = 'modified';
@@ -545,12 +709,8 @@ export async function getCommitFileDiff(
   else if (diffRes.stdout.includes('\ndeleted file mode ')) status = 'deleted';
   else if (diffRes.stdout.includes('\nrename from ')) status = 'renamed';
 
-  const [oldContent, newContent] = parsed.isBinary
-    ? [undefined, undefined]
-    : await Promise.all([
-        status === 'added' ? Promise.resolve('') : readGitBlob(repoPath, `${sha}^:${gitPath}`),
-        status === 'deleted' ? Promise.resolve('') : readGitBlob(repoPath, `${sha}:${gitPath}`),
-      ]);
+  const oldContent = parsed.isBinary ? undefined : status === 'added' ? '' : oldBlob;
+  const newContent = parsed.isBinary ? undefined : status === 'deleted' ? '' : newBlob;
 
   return {
     path: gitPath,
@@ -574,10 +734,10 @@ export async function getCommitFileDiff(
  */
 export async function verifyRemoteSync(repoPath: string): Promise<RemoteVerifyResult> {
   const checkedAt = new Date().toISOString();
-  const statusRes = await runGit(repoPath, ['status', '--porcelain=v2', '--branch', '-z']);
+  const statusRes = await runGit(repoPath, ['status', '--porcelain=v2', '--branch', '-z'], { readOnly: true });
   const status = parseStatusPorcelainV2Z(statusRes.stdout);
 
-  const remotesRes = await runGit(repoPath, ['remote']);
+  const remotesRes = await runGit(repoPath, ['remote'], { readOnly: true });
   const remotes = remotesRes.stdout
     .split(/\r?\n/)
     .map((r) => r.trim())
@@ -864,13 +1024,17 @@ export async function pushBranch(repoPath: string, setUpstream = false): Promise
 
 export async function listBranches(repoPath: string): Promise<BranchItem[]> {
   const format = '%(refname)%09%(refname:short)%09%(HEAD)%09%(upstream:short)%09%(upstream:track)%09%(objectname:short)%09%(contents:subject)%09%(committerdate:relative)';
-  const res = await runGit(repoPath, [
-    'for-each-ref',
-    '--sort=-committerdate',
-    `--format=${format}`,
-    'refs/heads',
-    'refs/remotes',
-  ]);
+  const res = await runGit(
+    repoPath,
+    [
+      'for-each-ref',
+      '--sort=-committerdate',
+      `--format=${format}`,
+      'refs/heads',
+      'refs/remotes',
+    ],
+    { readOnly: true },
+  );
 
   const items: BranchItem[] = [];
   for (const line of res.stdout.split(/\r?\n/)) {

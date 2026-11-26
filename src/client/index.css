@@ -27,9 +27,30 @@
   padding-top: env(safe-area-inset-top);
 }
 
-/* Mobile-friendly refinements for @git-diff-view */
+/* GitHub Desktop inspired Dark Diff Theme overrides for @git-diff-view */
 .gitdock-diff .diff-tailwindcss-wrapper {
   font-variant-ligatures: none;
+}
+
+.gitdock-diff .diff-tailwindcss-wrapper[data-theme="dark"] .diff-style-root {
+  --diff-border--: #30363d;
+  --diff-add-content--: #12281c;
+  --diff-del-content--: #2d1619;
+  --diff-add-lineNumber--: #1b4029;
+  --diff-del-lineNumber--: #542226;
+  --diff-plain-content--: #0d1117;
+  --diff-expand-content--: #161b22;
+  --diff-plain-lineNumber--: #0d1117;
+  --diff-expand-lineNumber--: #161b22;
+  --diff-plain-lineNumber-color--: #6e7681;
+  --diff-expand-lineNumber-color--: #8b949e;
+  --diff-hunk-content--: #122136;
+  --diff-hunk-lineNumber--: #19345c;
+  --diff-hunk-lineNumber-hover--: #1f6feb;
+  --diff-add-content-highlight--: #236438;
+  --diff-del-content-highlight--: #7c282b;
+  --diff-hunk-content-color--: #8ab4f8;
+  --diff-empty-content--: #161b22;
 }
 
 .gitdock-diff .diff-view-wrapper {
@@ -39,13 +60,51 @@
   background-color: #0d1117;
 }
 
-.gitdock-diff .diff-line-num {
-  min-width: 36px !important;
+.gitdock-diff .diff-line-num,
+.gitdock-diff .diff-line-old-num,
+.gitdock-diff .diff-line-new-num {
+  min-width: 38px !important;
   user-select: none;
 }
 
+/* Bold GitHub Desktop-style + / - markers & left edge indicator */
+.gitdock-diff .diff-line-content-operator[data-operator="+"] {
+  color: #3fb950 !important;
+  font-weight: 700;
+}
+
+.gitdock-diff .diff-line-content-operator[data-operator="-"] {
+  color: #f85149 !important;
+  font-weight: 700;
+}
+
+.gitdock-diff tr[data-state="diff"]:has([data-operator="+"]) .diff-line-num,
+.gitdock-diff tr[data-state="diff"]:has([data-operator="+"]) .diff-line-new-num {
+  color: #7ee787 !important;
+  box-shadow: inset 3px 0 0 #2ea043;
+}
+
+.gitdock-diff tr[data-state="diff"]:has([data-operator="-"]) .diff-line-num,
+.gitdock-diff tr[data-state="diff"]:has([data-operator="-"]) .diff-line-old-num {
+  color: #ffa198 !important;
+  box-shadow: inset 3px 0 0 #f85149;
+}
+
+.gitdock-diff [data-diff-highlight] {
+  border-radius: 3px;
+  padding-top: 1px;
+  padding-bottom: 1px;
+}
+
+.gitdock-diff .diff-line-hunk-content {
+  border-top: 1px solid #213654;
+  border-bottom: 1px solid #213654;
+}
+
 @media (max-width: 640px) {
-  .gitdock-diff .diff-line-num {
+  .gitdock-diff .diff-line-num,
+  .gitdock-diff .diff-line-old-num,
+  .gitdock-diff .diff-line-new-num {
     min-width: 30px !important;
     padding-left: 4px !important;
     padding-right: 4px !important;

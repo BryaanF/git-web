@@ -1,4 +1,4 @@
-import { execFile } from 'node:child_process';
+import { execFile, spawn } from 'node:child_process';
 import { promisify } from 'node:util';
 
 const execFileAsync = promisify(execFile);
@@ -25,7 +25,7 @@ interface QueueSlot {
 }
 
 const repoQueues = new Map<string, QueueSlot>();
-const MAX_CONCURRENT_PER_REPO = 2;
+const MAX_CONCURRENT_PER_REPO = 4;
 
 async function withRepoSlot<T>(repoKey: string, task: () => Promise<T>): Promise<T> {
   let slot = repoQueues.get(repoKey);
@@ -57,6 +57,8 @@ async function withRepoSlot<T>(repoKey: string, task: () => Promise<T>): Promise
 export interface RunGitOptions {
   timeoutMs?: number;
   allowNonZeroExit?: boolean;
+  readOnly?: boolean;
+  maxBuffer?: number;
   env?: Record<string, string>;
 }
 
@@ -77,6 +79,7 @@ export async function runGit(
 ): Promise<RunGitResult> {
   const fullArgs = ['-c', 'core.quotepath=false', '-C', repoPath, ...args];
   const timeoutMs = options.timeoutMs ?? 20_000;
+  const maxBuffer = options.maxBuffer ?? 32 * 1024 * 1024;
 
   return withRepoSlot(repoPath, async () => {
     try {
@@ -84,12 +87,13 @@ export async function runGit(
         shell: false,
         windowsHide: true,
         timeout: timeoutMs,
-        maxBuffer: 32 * 1024 * 1024,
+        maxBuffer,
         encoding: 'utf8',
         env: {
           ...process.env,
           GIT_TERMINAL_PROMPT: '0',
           LC_ALL: 'C.UTF-8',
+          ...(options.readOnly ? { GIT_OPTIONAL_LOCKS: '0' } : {}),
           ...options.env,
         },
       });
@@ -116,6 +120,82 @@ export async function runGit(
         args,
       });
     }
+  });
+}
+
+export async function runGitBinaryWithInput(
+  repoPath: string,
+  args: string[],
+  stdinText: string,
+  options: { timeoutMs?: number; maxOutputBytes?: number; readOnly?: boolean } = {},
+): Promise<Buffer> {
+  const fullArgs = ['-c', 'core.quotepath=false', '-C', repoPath, ...args];
+  const timeoutMs = options.timeoutMs ?? 20_000;
+  const maxOutputBytes = options.maxOutputBytes ?? 2 * 1024 * 1024;
+
+  return withRepoSlot(repoPath, () => {
+    return new Promise<Buffer>((resolve, reject) => {
+      const child = spawn('git', fullArgs, {
+        shell: false,
+        windowsHide: true,
+        stdio: ['pipe', 'pipe', 'pipe'],
+        env: {
+          ...process.env,
+          GIT_TERMINAL_PROMPT: '0',
+          LC_ALL: 'C.UTF-8',
+          ...(options.readOnly ? { GIT_OPTIONAL_LOCKS: '0' } : {}),
+        },
+      });
+
+      const chunks: Buffer[] = [];
+      let totalBytes = 0;
+      let settled = false;
+      const errChunks: Buffer[] = [];
+
+      const timer = setTimeout(() => {
+        if (settled) return;
+        settled = true;
+        child.kill();
+        reject(new Error(`git ${args[0] ?? ''} timed out`));
+      }, timeoutMs);
+
+      const finish = (fn: () => void) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        fn();
+      };
+
+      child.stdout.on('data', (chunk: Buffer) => {
+        totalBytes += chunk.length;
+        if (totalBytes > maxOutputBytes) {
+          child.kill();
+          finish(() => reject(new Error('Git batch output exceeded buffer limit')));
+          return;
+        }
+        chunks.push(chunk);
+      });
+
+      child.stderr.on('data', (chunk: Buffer) => {
+        if (errChunks.length < 16) errChunks.push(chunk);
+      });
+
+      child.on('error', (err) => {
+        finish(() => reject(err));
+      });
+
+      child.on('close', (code) => {
+        if (settled) return;
+        if (code !== 0) {
+          const stderr = Buffer.concat(errChunks).toString('utf8').trim();
+          finish(() => reject(new Error(stderr || `git ${args[0] ?? ''} exited with code ${code}`)));
+          return;
+        }
+        finish(() => resolve(Buffer.concat(chunks)));
+      });
+
+      child.stdin.end(stdinText, 'utf8');
+    });
   });
 }
 
