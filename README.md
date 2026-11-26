@@ -27,6 +27,13 @@ npm run start:ts
 # or: npm run start:tailscale
 ```
 
+Standard performance & verification suite (backend parsers, live HTTP/Git endpoints, React/diff rendering, and Vite bundle budgets):
+
+```bash
+npm run test:perf
+npm run verify
+```
+
 Development mode (backend watch + Vite HMR):
 
 ```bash
@@ -71,3 +78,31 @@ npm run runner -- --mode start --port 8080 --strict-port
 | `--host <ip>` | `GITWEB_HOST` | `0.0.0.0` | Bind interface (`127.0.0.1` for Tailscale-only) |
 | `--repo <path>` | — | CWD | Register one or more local Git repositories on startup |
 | `--no-auth` | `GITWEB_NO_AUTH=1` | `false` | Disable LAN pairing token requirement |
+
+## Commit Standard
+
+All commits in this repository follow a 4-type structured convention with a concise summary (`<= 50` chars) and details in the commit description body:
+
+`<type>(<scope>): <summary>` (or `<type>: <summary>`, max **50 characters**)
+
+| Type | Purpose | Example (`<= 50` chars) |
+| :--- | :--- | :--- |
+| `bugfix` | Bug fixes, error fixes, and regressions | `bugfix(ui): clear diff spinner on clean tree` |
+| `features` | New user-facing features or capabilities | `features(repo): add host folder browser` |
+| `chores` | Maintenance, build, docs, dependencies, or test/tooling setup | `chores(ci): add hook and workflow checks` |
+| `improvement` | Performance optimizations, refactors, or UX/quality polish | `improvement(git): batch staged diff blobs` |
+
+The local `commit-msg` hook installs automatically via `npm install` (`prepare`) or manually:
+
+```bash
+npm run hooks:install
+npm run check:commit -- --message "features(ui): add browse picker"
+```
+
+Every `push` and `pull_request` on GitHub is also checked automatically by [`.github/workflows/commit-standard.yml`](.github/workflows/commit-standard.yml).
+
+## Detailed Documentation (`docs/`)
+
+- [Commit Standard & GitHub Workflow](docs/commit-standard.md)
+- [Runner, Port Selection & Networking](docs/runner-and-networking.md)
+- [Testing & Performance Budgets](docs/testing-and-performance.md)

@@ -1,0 +1,57 @@
+name: Commit Standard & Checks
+
+on:
+  push:
+  pull_request:
+    types: [opened, synchronize, reopened, edited]
+
+jobs:
+  commit-standard:
+    name: Validate 4-Type Commit Standard
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Validate commits against 4-type standard
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          PUSH_BEFORE_SHA: ${{ github.event.before }}
+          PUSH_AFTER_SHA: ${{ github.sha }}
+        run: |
+          if [ "$EVENT_NAME" = "pull_request" ]; then
+            node scripts/validate-commit-msg.ts --range "$PR_BASE_SHA" "$PR_HEAD_SHA"
+          else
+            node scripts/validate-commit-msg.ts --range "$PUSH_BEFORE_SHA" "$PUSH_AFTER_SHA"
+          fi
+
+  verify:
+    name: Typecheck, Build & Tests
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Typecheck and build
+        run: npm run typecheck && npm run build
+
+      - name: Run full test suite sequentially
+        run: node --test --test-concurrency=1 tests/*.test.ts

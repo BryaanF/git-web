@@ -16,7 +16,12 @@
     "start:ts": "node src/server/index.ts --host 127.0.0.1 --port 8001 --strict-port --tailscale-port 8443 --ensure-build",
     "start:tailscale": "node src/server/index.ts --host 127.0.0.1 --port 8001 --strict-port --tailscale-port 8443 --ensure-build",
     "test": "node --test tests/*.test.ts",
-    "typecheck": "tsc --noEmit"
+    "test:perf": "node scripts/perf.ts",
+    "verify": "npm run typecheck && npm run build && npm test",
+    "typecheck": "tsc --noEmit",
+    "check:commit": "node scripts/validate-commit-msg.ts",
+    "hooks:install": "node scripts/install-hooks.ts",
+    "prepare": "node scripts/install-hooks.ts"
   },
   "dependencies": {
     "@git-diff-view/file": "^0.1.8",
