@@ -15,25 +15,25 @@ export const COMMIT_TYPE_META: Record<CommitType, CommitTypeInfo> = {
   bugfix: {
     type: 'bugfix',
     label: 'bugfix',
-    description: 'Perbaikan bug, error, atau regresi',
+    description: 'Bug fixes, error fixes, and regressions',
     example: 'bugfix(ui): clear diff spinner on clean tree',
   },
   features: {
     type: 'features',
     label: 'features',
-    description: 'Penambahan fitur atau kapabilitas baru',
+    description: 'New user-facing features or capabilities',
     example: 'features(repo): add host folder browser',
   },
   chores: {
     type: 'chores',
     label: 'chores',
-    description: 'Konfigurasi, build, deps, docs, atau tooling/tests',
+    description: 'Configuration, build, dependencies, docs, or tooling/tests',
     example: 'chores(ci): add hook and workflow checks',
   },
   improvement: {
     type: 'improvement',
     label: 'improvement',
-    description: 'Optimasi performa, refactor, atau peningkatan UX',
+    description: 'Performance optimizations, refactors, or UX polish',
     example: 'improvement(git): batch staged diff blobs',
   },
 };

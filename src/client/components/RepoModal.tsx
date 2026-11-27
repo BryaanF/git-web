@@ -86,7 +86,7 @@ export function RepoModal({
               type="text"
               value={newPath}
               onChange={(e) => setNewPath(e.target.value)}
-              placeholder="C:\Users\name\projects\my-app"
+              placeholder="e.g. ~/projects/my-app or C:\projects\my-app"
               className="min-w-0 flex-1 rounded-xl border border-[#30363d] bg-[#0d1117] px-3 py-2.5 text-sm text-[#e6edf3] placeholder-[#484f58] focus:border-sky-500 focus:outline-none"
             />
             <div className="flex shrink-0 gap-2">

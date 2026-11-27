@@ -528,7 +528,7 @@ export function ChangesTab({
                       type="text"
                       value={commitScope}
                       onChange={(e) => setCommitScope(e.target.value)}
-                      placeholder="Scope (opsional, mis. ui, git, api)"
+                      placeholder="Scope (optional, e.g. ui, git, api)"
                       className="w-full rounded-xl border border-[#30363d] bg-[#0d1117] px-3 py-1.5 font-mono text-xs text-[#e6edf3] placeholder-[#484f58] focus:border-sky-500 focus:outline-none"
                     />
                   )}
@@ -540,8 +540,8 @@ export function ChangesTab({
                   onChange={(e) => setCommitSummary(e.target.value)}
                   placeholder={
                     commitType && commitType !== 'custom'
-                      ? `Ringkasan singkat (mis. ${COMMIT_TYPE_META[commitType].example.replace(/^[^:]+:\s*/, '')})`
-                      : 'Ringkasan commit (pilih tipe di atas atau tulis <type>: <summary>)'
+                      ? `Short summary (e.g. ${COMMIT_TYPE_META[commitType].example.replace(/^[^:]+:\s*/, '')})`
+                      : 'Commit summary (select a type above or write <type>: <summary>)'
                   }
                   className="w-full rounded-xl border border-[#30363d] bg-[#0d1117] px-3 py-2 text-sm text-[#e6edf3] placeholder-[#484f58] focus:border-sky-500 focus:outline-none"
                 />
@@ -550,7 +550,7 @@ export function ChangesTab({
                   <div className="space-y-1">
                     <div className="flex items-center justify-between gap-2 rounded-lg bg-[#0d1117] px-2.5 py-1.5 text-[11px]">
                       <span className="truncate font-mono text-[#c9d1d9]" title={formattedCommitSummary}>
-                        {commitHasValidType ? formattedCommitSummary : `Pilih tipe: bugfix / features / chores / improvement`}
+                        {commitHasValidType ? formattedCommitSummary : 'Select type: bugfix / features / chores / improvement'}
                       </span>
                       <span
                         className={`shrink-0 font-mono ${
@@ -566,17 +566,17 @@ export function ChangesTab({
                     </div>
                     {commitTooLong && (
                       <p className="text-[11px] text-rose-400">
-                        Summary maksimal {MAX_COMMIT_SUBJECT_LENGTH} karakter — tulis garis besar di atas dan pindahkan detail ke description.
+                        Summary max {MAX_COMMIT_SUBJECT_LENGTH} characters — keep the header concise and move details into the description.
                       </p>
                     )}
                   </div>
                 ) : (
                   !commitType && (
                     <p className="text-[11px] text-[#6e7681]">
-                      Standar commit: <code className="text-[#8b949e]">bugfix</code>,{' '}
+                      Commit standard: <code className="text-[#8b949e]">bugfix</code>,{' '}
                       <code className="text-[#8b949e]">features</code>,{' '}
-                      <code className="text-[#8b949e]">chores</code>, atau{' '}
-                      <code className="text-[#8b949e]">improvement</code> (summary maks {MAX_COMMIT_SUBJECT_LENGTH} char).
+                      <code className="text-[#8b949e]">chores</code>, or{' '}
+                      <code className="text-[#8b949e]">improvement</code> (max {MAX_COMMIT_SUBJECT_LENGTH} chars).
                     </p>
                   )
                 )}
@@ -585,7 +585,7 @@ export function ChangesTab({
                   rows={3}
                   value={commitDesc}
                   onChange={(e) => setCommitDesc(e.target.value)}
-                  placeholder="Detail perubahan / description (jelaskan rincian di sini)"
+                  placeholder="Change details / description (explain what changed and why)"
                   className="w-full resize-none rounded-xl border border-[#30363d] bg-[#0d1117] px-3 py-2 text-xs text-[#e6edf3] placeholder-[#484f58] focus:border-sky-500 focus:outline-none"
                 />
                 <button
