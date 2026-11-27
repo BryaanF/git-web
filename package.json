@@ -2,7 +2,29 @@
   "name": "gitdock-web",
   "version": "1.0.0",
   "private": true,
+  "license": "MIT",
   "description": "Mobile-first web GitHub Desktop companion for inspecting unstaged, staged, and verified pushed diffs without colliding with ports 80/443",
+  "author": "Liant <42240127+BryaanF@users.noreply.github.com>",
+  "homepage": "https://github.com/BryaanF/git-web#readme",
+  "bugs": {
+    "url": "https://github.com/BryaanF/git-web/issues"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/BryaanF/git-web.git"
+  },
+  "keywords": [
+    "git",
+    "diff",
+    "mobile",
+    "tailscale",
+    "github-desktop",
+    "hono",
+    "react"
+  ],
+  "engines": {
+    "node": ">=22.18.0"
+  },
   "type": "module",
   "scripts": {
     "dev": "node scripts/dev.ts",
@@ -15,7 +37,13 @@
     "start:pick": "node src/server/index.ts --interactive",
     "start:ts": "node src/server/index.ts --host 127.0.0.1 --port 8001 --strict-port --tailscale-port 8443 --ensure-build",
     "start:tailscale": "node src/server/index.ts --host 127.0.0.1 --port 8001 --strict-port --tailscale-port 8443 --ensure-build",
-    "test": "node --test tests/*.test.ts",
+    "pm2:setup": "node scripts/pm2-autostart.ts setup",
+    "pm2:remove": "node scripts/pm2-autostart.ts remove",
+    "pm2:start": "pm2 start ecosystem.config.cjs",
+    "pm2:stop": "pm2 stop gitdock-web",
+    "pm2:restart": "pm2 restart gitdock-web",
+    "pm2:logs": "pm2 logs gitdock-web",
+    "test": "node --test --test-concurrency=1 tests/*.test.ts",
     "test:perf": "node scripts/perf.ts",
     "verify": "npm run typecheck && npm run build && npm test",
     "typecheck": "tsc --noEmit",

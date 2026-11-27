@@ -51,8 +51,9 @@ Whenever asked to **commit** changes or prepare commits/PRs in this repository, 
 | `npm test` / `npm run test:perf` | Native `node --test` suite / sequential SLA + bundle budget check |
 | `npm run verify` | Full verification (`typecheck` + `build` + `test`) |
 | `npm run check:commit` / `hooks:install` | Validate commit messages/ranges or configure local `core.hooksPath` -> `.githooks` |
+| `npm run pm2:setup` / `pm2:remove` | Run unattended via global PM2 + install/remove Windows Startup auto-launch |
 
-> See [docs/runner-and-networking.md](docs/runner-and-networking.md) for all CLI flags, port specs (`list`, `range`, `auto`, `off`), env variables, and Tailscale setup.
+> See [docs/runner-and-networking.md](docs/runner-and-networking.md) for all CLI flags, port specs (`list`, `range`, `auto`, `off`), env variables, Tailscale setup, and PM2 unattended daemon management.
 
 ---
 
@@ -61,20 +62,28 @@ Whenever asked to **commit** changes or prepare commits/PRs in this repository, 
 ```text
 git-web/
 ├── AGENTS.md                         # Concise agent guide & critical invariants
+├── CODE_OF_CONDUCT.md                # Contributor Covenant v2.1
+├── CONTRIBUTING.md                   # Contributor setup, coding rules & PR workflow
+├── LICENSE                           # MIT License
 ├── README.md                         # User quick start & overview
+├── SECURITY.md                       # Threat model, built-in guardrails & vulnerability reporting
+├── ecosystem.config.cjs              # PM2 daemon configuration (single fork, port 8001 preset)
 ├── docs/
 │   ├── commit-standard.md            # Detailed 4-type commit guide & agent commit playbook
 │   ├── runner-and-networking.md      # CLI flags, port specs, env vars, LAN/Tailscale setup
 │   └── testing-and-performance.md    # Test inventory, Windows sandbox note, perf SLAs
 ├── .github/
+│   ├── ISSUE_TEMPLATE/               # Bug report & feature request forms + security link
 │   ├── PULL_REQUEST_TEMPLATE.md      # PR checklist referencing 4-type commit standard
-│   └── workflows/commit-standard.yml # CI enforcement on push & PR + full test verification
+│   └── workflows/commit-standard.yml # CI enforcement on push & PR + cross-platform verification
 ├── .githooks/
 │   └── commit-msg                    # Local Git hook calling scripts/validate-commit-msg.ts
 ├── scripts/
 │   ├── dev.ts                        # Flexible project runner + interactive wizard
 │   ├── install-hooks.ts              # Configures repo-local `core.hooksPath` -> `.githooks`
 │   ├── perf.ts                       # Sequential performance & bundle SLA runner
+│   ├── pm2-autostart.ts              # Registers PM2 dump + silent Windows Startup launcher
+│   ├── pm2-entry.mjs                 # ESM bridge launching `startServer()` cleanly under PM2
 │   ├── runner-core.ts                # Pure CLI parsing & port plan resolution
 │   └── validate-commit-msg.ts        # Commit header & `--range` validator CLI
 ├── src/
@@ -121,13 +130,13 @@ git-web/
 ## 6. Critical Coding Conventions & Gotchas
 
 - **TypeScript (`tsconfig.json`)**: `erasableSyntaxOnly: true` is strict — **never** use `enum`, `namespace`, or constructor parameter properties (`private foo`). Always include `.ts`/`.tsx` extensions in relative imports (`NodeNext`). Keep `src/shared/*` free of Node built-ins and DOM globals.
-- **Security & Process Safety**: Always spawn binaries via `execFile`/`spawn` with `shell: false`. Pass every working-tree file path through `assertSafeRepoPath`. Keep ports `< 1024` blocked unless `allowPrivileged` is set, and block reverse-proxy loopback spoofing via `x-forwarded-for`/`tailscale-user-login` checks in `src/server/auth.ts`.
+- **Security & Process Safety**: Always spawn binaries via `execFile`/`spawn` with `shell: false`. Pass every working-tree file path through `assertSafeRepoPath` (and `assertSafeWorktreeTarget` for disk reads/deletes), validate branch names before `checkoutBranch`, keep ports `< 1024` blocked unless `allowPrivileged` is set, enforce `Host` + CSRF origin/header checks and reverse-proxy spoofing guards in `src/server/auth.ts`, and honor optional `--workspace-root` confinement when configured.
 - **Architecture & Socket Gotchas**:
   - Do not call `.unref()` on probe sockets in `isPortAvailable` / `getEphemeralPort`.
   - Resolve Vite via `path.resolve(root, 'node_modules/vite/bin/vite.js')` + `process.execPath` (`shell: false`), not `import.meta.resolve('vite/bin/vite.js')`.
   - Preserve `serveHttpsPort8443Url` alongside `serveHttpsUrl` in `ServerNetworkInfo.tailscale`.
   - Read-only `git` commands pass `{ readOnly: true }` (`GIT_OPTIONAL_LOCKS=0`) so polling never triggers SSE refresh loops; `diff` blobs use `readGitBlobsBatch` (`cat-file --batch`) and `getRepoStatus` reads `.git/config` before falling back to `git remote`.
-  - UI components reset `diffLoading` / `diffError` cleanly whenever `!selected` / `FlatFiles` empties, and client calls flow through `requestJson` in `src/client/api.ts`.
+  - UI components reset `diffLoading` / `diffError` cleanly whenever `!selected` / `FlatFiles` empties, and client calls flow through `requestJson` in `src/client/api.ts` (which sends `X-GitDock-Request: 1` for anti-CSRF).
 
 ---
 

@@ -1,39 +1,41 @@
 # Testing & Performance Standards
 
-Panduan verifikasi, benchmark performa backend & frontend, dan budget ukuran bundle standar untuk **GitDock Web**.
+Verification guide, backend/frontend performance benchmarks, and production bundle budgets for **GitDock Web**.
 
 ---
 
-## 1. Daftar Suite Pengujian
+## 1. Test Suite Inventory
 
-| File Test | Cakupan |
+| Test File | Coverage |
 | :--- | :--- |
-| [`tests/commit-standard.test.ts`](../tests/commit-standard.test.ts) | Parser, formatter, validasi 4 tipe commit, hook `--range`, dan CLI validator |
-| [`tests/diff-view.test.ts`](../tests/diff-view.test.ts) | Diff working tree, header patch untuk `@git-diff-view/file`, dan empty-state `ChangesTab` |
-| [`tests/fs-browse.test.ts`](../tests/fs-browse.test.ts) | Service browser folder host, deteksi `.git`, auth 401/200 `GET /api/fs/browse` |
-| [`tests/git-engine.test.ts`](../tests/git-engine.test.ts) | Parser porcelain-v2, proteksi path traversal, dan integrasi `git init --bare` + `push` |
-| [`tests/network.test.ts`](../tests/network.test.ts) | Parser port spec, resolver aman non-privileged, dan discovery LAN/Tailscale |
-| [`tests/performance.test.ts`](../tests/performance.test.ts) | SLA latensi parser, HTTP/Git E2E, render DiffFile/React SSR, dan budget bundle |
-| [`tests/runner.test.ts`](../tests/runner.test.ts) | CLI runner, anti-tabrakan port antar-service, dan proxy Vite |
+| [`tests/commit-standard.test.ts`](../tests/commit-standard.test.ts) | Parser, formatter, 4-type commit validation, `--range` checks, and CLI validator |
+| [`tests/diff-view.test.ts`](../tests/diff-view.test.ts) | Working-tree diff payloads, `@git-diff-view/file` patch headers, and `ChangesTab` empty state |
+| [`tests/fs-browse.test.ts`](../tests/fs-browse.test.ts) | Host folder browser, `.git` detection, auth `401`/`200`, CSRF/origin checks, DNS-rebinding guard, rate limit, and `--workspace-root` confinement |
+| [`tests/git-engine.test.ts`](../tests/git-engine.test.ts) | Porcelain-v2 parser, path traversal & branch-flag injection guards, and `git init --bare` + `push` integration |
+| [`tests/network.test.ts`](../tests/network.test.ts) | Port spec parser, safe non-privileged port resolver, and LAN/Tailscale network discovery |
+| [`tests/performance.test.ts`](../tests/performance.test.ts) | Parser, HTTP/Git E2E, `DiffFile`/React SSR render SLAs, and Vite bundle budgets |
+| [`tests/pm2-autostart.test.ts`](../tests/pm2-autostart.test.ts) | PM2 ecosystem preset, silent Windows Startup VBS generator, and Task Scheduler args |
+| [`tests/runner.test.ts`](../tests/runner.test.ts) | CLI runner parsing, cross-service port de-confliction, and Vite proxy wiring |
 
-### Menjalankan Pemeriksaan
+### Running Checks
 ```bash
 npm run typecheck
 npm run build
+npm test
 npm run test:perf
 npm run verify
 ```
 
 ---
 
-## 2. Performance Budgets (SLA Standar di `tests/performance.test.ts`)
+## 2. Performance Budgets (SLAs in `tests/performance.test.ts`)
 
-Suite dijalankan sekuensial (`suite(..., { concurrency: 1 })` & `--test-concurrency=1` lewat `npm run test:perf`) dengan sampel `>= 20` untuk metrik ber-persentil agar `p50` dan `p95` akurat tanpa kontensi event-loop:
+Performance tests run sequentially (`suite(..., { concurrency: 1 })` and `--test-concurrency=1` via `npm run test:perf` / `npm test`) with `>= 20` samples for percentile metrics so `p50` and `p95` stay free of worker contention:
 
 - **Backend parsers**:
   - `parseStatusPorcelainV2Z` (500 entries): `p95 <= 20 ms`
   - `parseUnifiedPatch` (60 hunks): `p95 <= 20 ms`
-- **Backend HTTP + Git endpoints** (repo 80 file, file termodifikasi 1.000 baris):
+- **Backend HTTP + Git endpoints** (80-file repo, 1,000-line modified file):
   - `GET /api/health`: `p95 <= 30 ms`
   - `GET /api/repos/:id/status`: `p50 <= 320 ms` / `p95 <= 450 ms`
   - `GET /api/repos/:id/diff` (unstaged/staged): `p50 <= 420 ms` / `p95 <= 1200 ms`
@@ -41,9 +43,9 @@ Suite dijalankan sekuensial (`suite(..., { concurrency: 1 })` & `--test-concurre
   - `GET /api/repos/:id/commits`: `p50 <= 450 ms` / `p95 <= 1200 ms`
   - 8-endpoint concurrent burst: total `<= 2000 ms`
 - **Frontend diff & React SSR render**:
-  - `DiffFile` unified parse + highlight: 400 baris `p95 <= 120 ms`, 2.500 baris `p95 <= 500 ms`
-  - `MobileDiffViewer` (400 baris): `p50 <= 80 ms` / `p95 <= 320 ms`
-  - `ChangesTab` (100 file): `p50 <= 160 ms` / `p95 <= 320 ms`
+  - `DiffFile` unified parse + highlight: 400 lines `p95 <= 120 ms`, 2,500 lines `p95 <= 500 ms`
+  - `MobileDiffViewer` (400 lines): `p50 <= 80 ms` / `p95 <= 320 ms`
+  - `ChangesTab` (100 files): `p50 <= 160 ms` / `p95 <= 320 ms`
   - `HistoryTab` shell: `p95 <= 80 ms`
 - **Frontend production bundle (`dist/client`)**:
   - Entry JS `<= 100 KB` raw (`<= 35 KB` gzip)
@@ -53,7 +55,7 @@ Suite dijalankan sekuensial (`suite(..., { concurrency: 1 })` & `--test-concurre
 
 ---
 
-## 3. Catatan Lingkungan Pengujian
+## 3. Environment Notes
 
-- **`tests/git-engine.test.ts` pada sandbox Windows terbatas**: Subtest integrasi Git memanggil `git push -u origin main` ke bare repo lokal. Pada sandbox Windows yang terkunci, MSYS `sh.exe` bawaan Git dapat gagal dengan `NtCreateDirectoryObject ... 0xC0000022` walaupun kodenya sehat; verifikasi `tests/git-engine.test.ts` pada terminal lokal standar setiap kali menyentuh `src/server/git/*`.
-- **Testing runner dengan aman**: Gunakan `--dry-run` untuk memverifikasi parsing CLI & resolusi port tanpa bind server, atau jalankan `scripts/dev.ts` di port uji non-default lalu hentikan setelah selesai.
+- **`tests/git-engine.test.ts` inside restricted Windows sandboxes**: The Git integration subtest executes `git push -u origin main` against a local bare repository. Inside restricted Windows sandboxes, MSYS `sh.exe` bundled with Git for Windows can fail with `NtCreateDirectoryObject ... 0xC0000022`. Run `tests/git-engine.test.ts` in a standard local terminal whenever modifying `src/server/git/*`.
+- **Safe runner smoke checks**: Use `--dry-run` to validate CLI parsing and live port resolution without binding ports, or run `scripts/dev.ts` on non-default test ports and stop it immediately after testing.

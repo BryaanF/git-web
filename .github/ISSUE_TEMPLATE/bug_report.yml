@@ -1,0 +1,37 @@
+name: Bug Report
+description: Report a bug, regression, or security-non-sensitive issue in GitDock Web
+title: "bugfix: "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting a bug! For security vulnerabilities, please follow [SECURITY.md](../../SECURITY.md) instead of filing a public issue.
+  - type: textarea
+    id: description
+    attributes:
+      label: What happened?
+      description: Clear description of the bug and expected behavior.
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. Run `npm run dev`...
+        2. Open on phone via LAN/Tailscale...
+        3. See error...
+    validations:
+      required: true
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      placeholder: |
+        - OS: (e.g. Windows 11, Ubuntu 24.04, macOS)
+        - Node.js version: (output of `node -v`)
+        - Git version: (output of `git --version`)
+        - Browser / Device: (e.g. Chrome on Android, Safari on iOS)
+    validations:
+      required: true

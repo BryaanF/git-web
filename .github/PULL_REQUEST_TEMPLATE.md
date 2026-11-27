@@ -2,7 +2,7 @@
 
 - Follow the repository 4-type commit standard (`bugfix` | `features` | `chores` | `improvement`)
 - Keep commit summary headers concise (`<= 50` chars) and put full change details in the commit description body
-- Details: [docs/commit-standard.md](../docs/commit-standard.md)
+- Details: [docs/commit-standard.md](../docs/commit-standard.md) · Guidelines: [CONTRIBUTING.md](../CONTRIBUTING.md)
 
 ## Verification
 

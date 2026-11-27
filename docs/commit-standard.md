@@ -1,84 +1,84 @@
 # Commit Message Standard & GitHub Workflow
 
-Repository **GitDock Web** menggunakan **4 tipe commit canonical** dengan format **summary garis besar maksimal 50 karakter** dan **detail di description (body)** agar tampilan di GitHub, GitHub Desktop, dan UI History mobile tidak pernah terpotong.
+**GitDock Web** enforces a **4-type canonical commit convention** with a concise header summary capped at **50 characters** and full implementation details in the **commit description (body)** so commit lists stay readable on GitHub, GitHub Desktop, and the mobile History UI.
 
 ---
 
-## 1. Struktur Commit Message
+## 1. Commit Message Structure
 
 ```text
-<type>(<scope>): <summary garis besar max 50 char>
+<type>(<scope>): <high-level summary max 50 chars>
 
-<description / body detail:
-- Apa yang diubah dan mengapa
-- Modul atau endpoint terkait
-- Catatan verifikasi / dampak jika relevan>
+<detailed description / body:
+- What changed and why
+- Affected modules or endpoints
+- Verification notes if relevant>
 ```
 
-Atau tanpa scope jika bersifat lintas modul/global:
+Or without a scope when changes span multiple modules:
 
 ```text
-<type>: <summary garis besar max 50 char>
+<type>: <high-level summary max 50 chars>
 
-<description detail perubahan>
+<detailed change description>
 ```
 
-### Aturan Header & Description
-- **`<type>`** (wajib, lowercase): hanya salah satu dari 4 tipe berikut:
+### Header & Description Rules
+- **`<type>`** (required, lowercase): only one of these 4 canonical values:
   - `bugfix`
   - `features`
   - `chores`
   - `improvement`
-- **`<scope>`** (opsional, lowercase, ringkas agar menghemat ruang): `[a-z0-9][a-z0-9._/-]*` (contoh: `ui`, `git`, `repo`, `perf`, `ci`, `docs`, `api`).
-- **`: <summary>`** (wajib titik dua diikuti spasi): **garis besar singkat** saja; **total baris pertama (`<type>(<scope>): <summary>`) maksimal 50 karakter** agar tidak terpotong di daftar commit.
-- **Description / Body** (pisahkan 1 baris kosong setelah header): jelaskan seluruh **detail perubahan** di sini (konteks, alasan teknis, file/komponen terdampak, atau poin verifikasi). Tidak dibatasi 50 karakter.
+- **`<scope>`** (optional, lowercase, short): `[a-z0-9][a-z0-9._/-]*` (e.g. `ui`, `git`, `repo`, `perf`, `ci`, `docs`, `api`, `security`).
+- **`: <summary>`** (required colon + space): **concise high-level summary only**; the **entire first line (`<type>(<scope>): <summary>`) must be `<= 50` characters** so it never truncates in commit lists.
+- **Description / Body** (separated by one blank line after the header): place all **implementation details** here (context, technical rationale, affected files, verification notes). There is no 50-character limit on the body.
 
 ---
 
-## 2. Panduan Pemilihan 4 Tipe Commit
+## 2. Selecting One of the 4 Types
 
-| Tipe | Kapan Digunakan | Tipe Non-Standar yang Harus Dipetakan | Contoh Header (`<= 50` char) |
+| Type | When to Use | Disallowed Aliases to Map | Example Header (`<= 50` chars) |
 | :--- | :--- | :--- | :--- |
-| **`bugfix`** | Memperbaiki bug runtime, UI glitch, race condition, crash, atau regresi | `fix`, `hotfix`, `bug` | `bugfix(ui): clear diff spinner on clean tree` |
-| **`features`** | Menambah fitur baru yang terlihat user, endpoint API baru, atau opsi CLI baru | `feat`, `feature`, `add` | `features(repo): add host folder browser` |
-| **`chores`** | Konfigurasi, dependencies, script build, Git hooks, CI, docs, atau tooling/tests | `chore`, `docs`, `ci`, `build`, `test`, `style` | `chores(ci): add hook and workflow checks` |
-| **`improvement`** | Optimasi performa, refactor internal, penyempurnaan UX, atau pembersihan kode | `perf`, `refactor`, `enhance`, `polish` | `improvement(git): batch staged diff blobs` |
+| **`bugfix`** | Runtime bugs, UI glitches, race conditions, crashes, security fixes, regressions | `fix`, `hotfix`, `bug` | `bugfix(ui): clear diff spinner on clean tree` |
+| **`features`** | New user-facing features, API endpoints, or CLI flags | `feat`, `feature`, `add` | `features(repo): add host folder browser` |
+| **`chores`** | Config, dependencies, build scripts, Git hooks, CI, docs, or tests/tooling | `chore`, `docs`, `ci`, `build`, `test`, `style` | `chores(ci): add hook and workflow checks` |
+| **`improvement`** | Performance optimizations, refactors, UX polish, or cleanup | `perf`, `refactor`, `enhance`, `polish` | `improvement(git): batch staged diff blobs` |
 
 > [!IMPORTANT]
-> Tipe di luar daftar (`feat:`, `fix:`, `chore:`, `refactor:`, `docs:`, `perf:`, huruf kapital), header tanpa tipe, atau header melebihi **50 karakter** **otomatis ditolak** oleh hook Git lokal maupun GitHub Actions CI. Commit auto-generated Git seperti `Merge ...`, `Revert "..."`, `fixup! ...`, `squash! ...` tetap diizinkan.
+> Any type outside this list (`feat:`, `fix:`, `chore:`, `refactor:`, `docs:`, `perf:`, uppercase types), missing types, or headers longer than **50 characters** are **automatically rejected** by both the local Git hook and GitHub Actions CI. Auto-generated Git commits (`Merge ...`, `Revert "..."`, `fixup! ...`, `squash! ...`) remain allowed.
 
 ---
 
-## 3. Aturan Wajib Agen AI & Kontributor Saat Ada Perintah Commit
+## 3. Mandatory Workflow for AI Agents & Contributors
 
-Setiap kali ada instruksi atau tugas untuk membuat commit (mis. *"commit"*, *"commit perubahan ini"*, *"commit ke github"*):
+Whenever creating commits in this repository:
 
-1. **Inspeksi perubahan terlebih dahulu**: periksa `git status` dan diff (`git diff --staged` / `git diff`) untuk memahami kategori setiap file yang diubah.
-2. **Tulis Summary sebagai garis besar (`<= 50` karakter)** dengan salah satu dari 4 tipe (`bugfix`, `features`, `chores`, `improvement`) + scope ringkas. Hitung panjang total baris summary agar tidak lebih dari 50 karakter!
-3. **Tulis Detail di Description (body)**: selalu sertakan commit description (via multiple `-m` di `git commit -m "<summary>" -m "<detail description>"` atau editor) yang menjelaskan rincian perubahan secara jelas.
-4. **Pisahkan jika perlu**: jika ada perubahan berbeda jenis (mis. bugfix + fitur + chores), pecah menjadi beberapa commit terpisah kecuali user meminta digabung.
-5. **Validasi otomatis**:
-   - Bisa uji terlebih dahulu via `npm run check:commit -- --message "<summary>"`.
-   - Jangan pernah melewati hook `.githooks/commit-msg` menggunakan `--no-verify`.
-6. **Single Source of Truth**: seluruh aturan validasi berada di [`src/shared/commit-standard.ts`](../src/shared/commit-standard.ts) (`MAX_COMMIT_SUBJECT_LENGTH = 50`).
+1. **Inspect changes first**: review `git status` and diffs (`git diff --staged` / `git diff`) to categorize every modified file.
+2. **Write the Summary as a concise outline (`<= 50` chars)** using one of the 4 types (`bugfix`, `features`, `chores`, `improvement`) + an optional short scope.
+3. **Put Details in the Description (body)**: always include a detailed commit description (via multiple `-m` flags, `git commit -m "<summary>" -m "<detailed description>"`, or your editor).
+4. **Split unrelated work**: separate distinct change types (e.g. `bugfix` vs `features` vs `chores`) into logical commits unless explicitly asked to combine.
+5. **Validate cleanly**:
+   - Check messages beforehand via `npm run check:commit -- --message "<summary>"`.
+   - Never bypass `.githooks/commit-msg` with `--no-verify`.
+6. **Single Source of Truth**: validation rules live in [`src/shared/commit-standard.ts`](../src/shared/commit-standard.ts) (`MAX_COMMIT_SUBJECT_LENGTH = 50`).
 
 ---
 
-## 4. Lapisan Otomatisasi (Lokal, Aplikasi Web, dan GitHub)
+## 4. Automation Layers (Local, Web UI, and GitHub)
 
-1. **Hook Git Lokal ([`.githooks/commit-msg`](../.githooks/commit-msg))**
-   - Otomatis terpasang saat `npm install` (via script `prepare` -> [`scripts/install-hooks.ts`](../scripts/install-hooks.ts)), atau jalankan manual `npm run hooks:install`.
-   - Menjalankan `node scripts/validate-commit-msg.ts "$1"` pada setiap `git commit`.
+1. **Local Git Hook ([`.githooks/commit-msg`](../.githooks/commit-msg))**
+   - Installed automatically during `npm install` (`prepare` -> [`scripts/install-hooks.ts`](../scripts/install-hooks.ts)) unless skipped by `CI` or an existing custom `core.hooksPath`, or manually via `npm run hooks:install`.
+   - Executes `node scripts/validate-commit-msg.ts "$1"` on every `git commit`.
 2. **CLI Validator ([`scripts/validate-commit-msg.ts`](../scripts/validate-commit-msg.ts))**
-   - Cek pesan tunggal:
+   - Validate a single header:
      ```bash
      npm run check:commit -- --message "features(ui): add browse picker"
      ```
-   - Cek rentang commit Git:
+   - Validate a Git commit range:
      ```bash
      npm run check:commit -- --range main HEAD
      ```
 3. **GitDock Web Commit Composer ([`ChangesTab.tsx`](../src/client/components/ChangesTab.tsx) & [`StatusBadge.tsx`](../src/client/components/StatusBadge.tsx))**
-   - Menyediakan pilihan tipe `bugfix`, `features`, `chores`, `improvement` (+ `custom`), `Scope (opsional)`, preview header dengan penghitung **`n/50`** (memblokir submit jika > 50 karakter pada standar 4 tipe), serta kolom **Description** untuk detail perubahan.
+   - Provides quick selectors for `bugfix`, `features`, `chores`, `improvement` (plus `custom` for external repositories), optional `Scope`, live `n/50` header counter, and a **Description** field.
 4. **GitHub Actions CI ([`.github/workflows/commit-standard.yml`](../.github/workflows/commit-standard.yml))**
-   - Memvalidasi otomatis seluruh commit pada setiap `push` dan `pull_request` terhadap format 4 tipe & batas 50 karakter header.
+   - Validates all commits on every `push` and `pull_request` against the 4-type format and 50-character header cap.
