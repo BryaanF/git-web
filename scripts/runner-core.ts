@@ -21,6 +21,7 @@ export interface RunnerCliOptions {
   apiTarget: string | null;
   host: string;
   repoPaths: string[];
+  workspaceRoot: string | null;
   noAuth: boolean;
   strictPort: boolean;
   allowPrivilegedPort: boolean;
@@ -156,6 +157,7 @@ export function parseRunnerArgs(
     apiTarget: env.GITWEB_API_TARGET?.trim() || null,
     host: env.GITWEB_HOST?.trim() || '0.0.0.0',
     repoPaths: [],
+    workspaceRoot: env.GITWEB_WORKSPACE_ROOT?.trim() || null,
     noAuth: env.GITWEB_NO_AUTH === '1',
     strictPort: env.GITWEB_STRICT_PORT === '1',
     allowPrivilegedPort: env.GITWEB_ALLOW_PRIVILEGED_PORT === '1',
@@ -257,6 +259,10 @@ export function parseRunnerArgs(
     } else if (flag === '--repo' || flag === '-r') {
       if (!value) throw new Error(`Missing value for ${flag}`);
       options.repoPaths.push(value);
+      if (consumedNext) i += 1;
+    } else if (flag === '--workspace-root') {
+      if (!value) throw new Error(`Missing value for ${flag}`);
+      options.workspaceRoot = value.trim();
       if (consumedNext) i += 1;
     } else if (flag === '--no-auth') {
       options.noAuth = true;
@@ -372,11 +378,17 @@ export async function resolveRunnerPlan(
   for (const repoPath of options.repoPaths) {
     serverArgs.push('--repo', repoPath);
   }
+  if (options.workspaceRoot) {
+    serverArgs.push('--workspace-root', options.workspaceRoot);
+  }
 
   const serverEnv: Record<string, string> = {
     GITWEB_HOST: options.host,
     GITWEB_TAILSCALE_PORT: options.tailscalePort === null ? 'off' : String(options.tailscalePort),
   };
+  if (options.workspaceRoot) {
+    serverEnv.GITWEB_WORKSPACE_ROOT = options.workspaceRoot;
+  }
   if (serverPort !== null) {
     serverEnv.GITWEB_PORT = String(serverPort);
     serverEnv.GITWEB_SERVER_PORT = String(serverPort);
@@ -496,6 +508,7 @@ General & Interactive Options:
       --dry-run                Resolve and print the service/port plan without starting
   -H, --host <ip>              Bind interface (default: 0.0.0.0)
   -r, --repo <path>            Register a local Git repository (repeatable)
+      --workspace-root <dir>   Restrict folder browsing & repo registration inside <dir>
       --no-auth                Disable LAN pairing token requirement
       --watch / --no-watch     Toggle Node --watch on backend server
   -h, --help                   Show this help message

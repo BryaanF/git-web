@@ -20,7 +20,6 @@ import {
   ApiAuthError,
   api,
   bootstrapTokenFromUrl,
-  getStoredToken,
   setStoredToken,
 } from './api.ts';
 import { ChangesTab } from './components/ChangesTab.tsx';
@@ -163,10 +162,7 @@ export function App() {
   // Live SSE updates when files or git refs change on PC
   useEffect(() => {
     if (!activeRepoId || authNeeded) return;
-    const token = getStoredToken();
-    const url = token
-      ? `/api/repos/${encodeURIComponent(activeRepoId)}/events?token=${encodeURIComponent(token)}`
-      : `/api/repos/${encodeURIComponent(activeRepoId)}/events`;
+    const url = `/api/repos/${encodeURIComponent(activeRepoId)}/events`;
 
     let inflight = false;
     const es = new EventSource(url, { withCredentials: true });
@@ -444,7 +440,7 @@ export function App() {
                 type="text"
                 value={quickRepoPath}
                 onChange={(e) => setQuickRepoPath(e.target.value)}
-                placeholder="C:\Users\name\projects\my-repo"
+                placeholder="e.g. ~/projects/my-repo or C:\projects\my-repo"
                 className="min-w-0 flex-1 rounded-xl border border-[#30363d] bg-[#0d1117] px-3 py-2.5 text-sm text-[#e6edf3] placeholder-[#484f58] focus:border-sky-500 focus:outline-none"
               />
               <div className="flex shrink-0 gap-2">

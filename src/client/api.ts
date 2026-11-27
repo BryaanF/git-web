@@ -46,6 +46,7 @@ export class ApiAuthError extends Error {
 async function requestJson<T>(path: string, init: RequestInit = {}): Promise<T> {
   const token = getStoredToken();
   const headers = new Headers(init.headers);
+  headers.set('X-GitDock-Request', '1');
   if (token) {
     headers.set('X-GitWeb-Token', token);
   }

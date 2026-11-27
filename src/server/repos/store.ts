@@ -6,10 +6,26 @@ import { validateGitRepo } from '../git/service.ts';
 
 export class RepoStore {
   private readonly configPath: string;
+  private readonly workspaceRoot?: string;
   private repos: RepoEntry[] = [];
 
-  constructor(dataDir: string) {
+  constructor(dataDir: string, options: { workspaceRoot?: string } = {}) {
     this.configPath = path.join(dataDir, '.gitweb-repos.json');
+    this.workspaceRoot = options.workspaceRoot ? path.resolve(options.workspaceRoot) : undefined;
+  }
+
+  private async isAllowedRepoPath(repoRoot: string): Promise<boolean> {
+    if (!this.workspaceRoot) return true;
+    try {
+      const [realWorkspace, realRepo] = await Promise.all([
+        fs.realpath(this.workspaceRoot),
+        fs.realpath(path.resolve(repoRoot)),
+      ]);
+      const rel = path.relative(realWorkspace, realRepo);
+      return !rel || (!rel.startsWith('..') && !path.isAbsolute(rel));
+    } catch {
+      return false;
+    }
   }
 
   private makeId(repoPath: string): string {
@@ -28,6 +44,9 @@ export class RepoStore {
           if (item && typeof item === 'object' && typeof (item as RepoEntry).path === 'string') {
             try {
               const info = await validateGitRepo((item as RepoEntry).path);
+              if (!(await this.isAllowedRepoPath(info.rootPath))) {
+                continue;
+              }
               valid.push({
                 id: this.makeId(info.rootPath),
                 name: info.name,
@@ -56,12 +75,12 @@ export class RepoStore {
 
     // Also auto-discover sibling git repos one level up or down if none found yet
     if (this.repos.length === 0) {
-      await this.discoverNearbyRepos(process.cwd());
+      await this.discoverNearbyRepos(this.workspaceRoot ?? process.cwd());
     }
   }
 
   private async discoverNearbyRepos(baseDir: string): Promise<void> {
-    const candidates = [baseDir, path.dirname(baseDir)];
+    const candidates = this.workspaceRoot ? [this.workspaceRoot] : [baseDir, path.dirname(baseDir)];
     for (const dir of candidates) {
       try {
         const entries = await fs.readdir(dir, { withFileTypes: true });
@@ -96,6 +115,9 @@ export class RepoStore {
 
   async addRepo(candidatePath: string): Promise<RepoEntry> {
     const info = await validateGitRepo(candidatePath);
+    if (!(await this.isAllowedRepoPath(info.rootPath))) {
+      throw new Error('Repository path is outside the configured workspace root');
+    }
     const id = this.makeId(info.rootPath);
     const existing = this.repos.find((r) => r.id === id);
     if (existing) {

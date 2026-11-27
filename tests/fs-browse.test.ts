@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
+import http from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
 import { test } from 'node:test';
@@ -120,6 +121,142 @@ test('GET /api/fs/browse enforces auth and serves host directory listings cleanl
       `${baseUrl}/api/fs/browse?path=${encodeURIComponent(path.join(workspaceDir, 'missing'))}`,
     );
     assert.equal(missingRes.status, 404);
+  } finally {
+    if (server) {
+      await new Promise<void>((resolve) => server!.close(() => resolve()));
+    }
+    await fs.rm(tmpBase, { recursive: true, force: true });
+  }
+});
+
+test('Security hardening: CSRF checks, DNS rebinding guard, pairing rate limit, and workspaceRoot confinement', async () => {
+  const tmpBase = await fs.mkdtemp(path.join(os.tmpdir(), 'gitdock-sec-'));
+  const dataDir = path.join(tmpBase, 'data');
+  const workspaceDir = path.join(tmpBase, 'workspace');
+  const allowedRepo = path.join(workspaceDir, 'allowed-repo');
+  const outsideRepo = path.join(tmpBase, 'outside-repo');
+
+  await fs.mkdir(dataDir, { recursive: true });
+  await fs.mkdir(path.join(allowedRepo, '.git'), { recursive: true });
+  await fs.mkdir(path.join(outsideRepo, '.git'), { recursive: true });
+
+  // Unit check: workspaceRoot blocks browsing outside the allowed folder
+  const confinedListing = await browseDirectories(undefined, { workspaceRoot: workspaceDir });
+  assert.equal(confinedListing.currentPath, path.resolve(workspaceDir));
+  assert.equal(confinedListing.parentPath, null);
+  await assert.rejects(() => browseDirectories(outsideRepo, { workspaceRoot: workspaceDir }));
+
+  let server: ServerType | null = null;
+  try {
+    const repoStore = new RepoStore(dataDir, { workspaceRoot: workspaceDir });
+    await repoStore.init([]);
+    await assert.rejects(() => repoStore.addRepo(outsideRepo));
+
+    const auth = await createAuthManager(dataDir, {
+      explicitToken: 'secure-test-token-123456',
+      clientPort: 5173,
+    });
+    const app = createGitDockApp({
+      repoStore,
+      auth,
+      port: 0,
+      host: '127.0.0.1',
+      clientPort: 5173,
+      workspaceRoot: workspaceDir,
+    });
+
+    const port = await new Promise<number>((resolve, reject) => {
+      const created = serve({ fetch: app.fetch, port: 0, hostname: '127.0.0.1' }, (info) => {
+        resolve(info.port);
+      });
+      created.once('error', reject);
+      server = created;
+    });
+
+    const baseUrl = `http://127.0.0.1:${port}`;
+
+    // 1. DNS rebinding protection: non-loopback Host on loopback socket must require auth
+    // Use node:http because Fetch/undici strips user-supplied Host headers.
+    const rebindStatus = await new Promise<number>((resolve, reject) => {
+      const req = http.request(
+        {
+          hostname: '127.0.0.1',
+          port,
+          path: '/api/repos',
+          method: 'GET',
+          headers: { Host: 'evil.example:7745' },
+        },
+        (res) => {
+          res.resume();
+          resolve(res.statusCode ?? 0);
+        },
+      );
+      req.on('error', reject);
+      req.end();
+    });
+    assert.equal(rebindStatus, 401);
+
+    // 2. Cross-site Sec-Fetch-Site must be blocked with 403
+    const crossSiteRes = await fetch(`${baseUrl}/api/repos`, {
+      method: 'POST',
+      headers: {
+        'Sec-Fetch-Site': 'cross-site',
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ path: allowedRepo }),
+    });
+    assert.equal(crossSiteRes.status, 403);
+
+    // 3. Untrusted browser Origin on mutating POST must be blocked with 403
+    const badOriginRes = await fetch(`${baseUrl}/api/repos`, {
+      method: 'POST',
+      headers: {
+        Origin: 'https://evil.example',
+        'X-GitDock-Request': '1',
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ path: allowedRepo }),
+    });
+    assert.equal(badOriginRes.status, 403);
+
+    // 4. Browser-originated POST without custom header or JSON content-type must be blocked with 403
+    const formCsrfRes = await fetch(`${baseUrl}/api/repos`, {
+      method: 'POST',
+      headers: {
+        Origin: `http://127.0.0.1:${port}`,
+        'Content-Type': 'text/plain',
+      },
+      body: JSON.stringify({ path: allowedRepo }),
+    });
+    assert.equal(formCsrfRes.status, 403);
+
+    // 5. Same-origin / Vite dev proxy POST with X-GitDock-Request passes CSRF check and reaches workspaceRoot guard (400)
+    const devOriginRes = await fetch(`${baseUrl}/api/repos`, {
+      method: 'POST',
+      headers: {
+        Origin: 'http://127.0.0.1:5173',
+        'X-GitDock-Request': '1',
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ path: outsideRepo }),
+    });
+    assert.equal(devOriginRes.status, 400);
+
+    // 6. Rate limiting on POST /api/auth/pair after 10 invalid token attempts -> 429
+    for (let i = 0; i < 10; i += 1) {
+      const badPair = await fetch(`${baseUrl}/api/auth/pair`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ token: `wrong-${i}` }),
+      });
+      assert.equal(badPair.status, 401);
+    }
+    const throttledRes = await fetch(`${baseUrl}/api/auth/pair`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ token: 'secure-test-token-123456' }),
+    });
+    assert.equal(throttledRes.status, 429);
   } finally {
     if (server) {
       await new Promise<void>((resolve) => server!.close(() => resolve()));

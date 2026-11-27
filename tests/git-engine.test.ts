@@ -7,6 +7,7 @@ import { parseStatusPorcelainV2Z, parseUnifiedPatch } from '../src/server/git/pa
 import { runGit } from '../src/server/git/runner.ts';
 import {
   assertSafeRepoPath,
+  checkoutBranch,
   getCommitDetail,
   getCommitFileDiff,
   getCommitHistory,
@@ -50,12 +51,24 @@ test('parseStatusPorcelainV2Z separates staged, unstaged, untracked, and renamed
   assert.equal(parsed.conflicted[0].path, 'conflict.txt');
 });
 
-test('assertSafeRepoPath blocks parent traversal and .git metadata access', () => {
+test('assertSafeRepoPath blocks parent traversal, control chars, and .git metadata access', () => {
   const root = path.resolve(os.tmpdir(), 'sample-repo');
   assert.throws(() => assertSafeRepoPath(root, '../secret.txt'));
   assert.throws(() => assertSafeRepoPath(root, '.git/config'));
+  assert.throws(() => assertSafeRepoPath(root, 'src/index.ts\nHEAD:secret'));
+  assert.throws(() => assertSafeRepoPath(root, 'src/index.ts\0bad'));
   const ok = assertSafeRepoPath(root, 'src/index.ts');
   assert.equal(ok, path.join(root, 'src', 'index.ts'));
+  const doubleDotName = assertSafeRepoPath(root, 'src/v1..v2.ts');
+  assert.equal(doubleDotName, path.join(root, 'src', 'v1..v2.ts'));
+});
+
+test('checkoutBranch rejects leading dash flags and control characters', async () => {
+  const root = path.resolve(os.tmpdir(), 'sample-repo');
+  await assert.rejects(() => checkoutBranch(root, '--orphan=hack', true), /Invalid branch name/);
+  await assert.rejects(() => checkoutBranch(root, '-B main', false), /Invalid branch name/);
+  await assert.rejects(() => checkoutBranch(root, 'feat\n--force', true), /Invalid branch name/);
+  await assert.rejects(() => checkoutBranch(root, '   ', false), /Branch name is required/);
 });
 
 test('Git integration: unstaged, untracked, staged diffs & live pushed vs unpushed verification', async () => {

@@ -70,7 +70,32 @@ async function mapWithConcurrency<T, R>(
   return results;
 }
 
-export async function getDirectoryQuickRoots(workspaceHint?: string): Promise<DirectoryQuickRoot[]> {
+async function isWithinWorkspaceRoot(targetPath: string, workspaceRoot: string): Promise<boolean> {
+  try {
+    const [realRoot, realTarget] = await Promise.all([
+      fs.realpath(path.resolve(workspaceRoot)),
+      fs.realpath(path.resolve(targetPath)),
+    ]);
+    const rel = path.relative(realRoot, realTarget);
+    if (!rel) return true;
+    return !rel.startsWith('..') && !path.isAbsolute(rel);
+  } catch {
+    return false;
+  }
+}
+
+export async function getDirectoryQuickRoots(
+  workspaceHint?: string,
+  workspaceRoot?: string,
+): Promise<DirectoryQuickRoot[]> {
+  if (workspaceRoot) {
+    const resolvedRoot = path.resolve(workspaceRoot);
+    if (await isExistingDirectory(resolvedRoot)) {
+      return [{ label: path.basename(resolvedRoot) || 'Workspace', path: resolvedRoot }];
+    }
+    return [];
+  }
+
   const roots: DirectoryQuickRoot[] = [];
   const seen = new Set<string>();
 
@@ -150,8 +175,43 @@ function expandRequestedPath(rawPath: string): string {
 
 async function resolveTargetDirectory(
   requestedPath: string | undefined,
-  options: { nearest?: boolean; defaultDir?: string },
+  options: { nearest?: boolean; defaultDir?: string; workspaceRoot?: string },
 ): Promise<string> {
+  if (options.workspaceRoot) {
+    const resolvedWorkspaceRoot = path.resolve(options.workspaceRoot);
+    if (!(await isExistingDirectory(resolvedWorkspaceRoot))) {
+      throw new Error(`Workspace root not found: ${resolvedWorkspaceRoot}`);
+    }
+    if (!requestedPath || !requestedPath.trim()) {
+      return resolvedWorkspaceRoot;
+    }
+
+    const expanded = path.resolve(expandRequestedPath(requestedPath));
+    if (await isExistingDirectory(expanded)) {
+      if (!(await isWithinWorkspaceRoot(expanded, resolvedWorkspaceRoot))) {
+        throw new Error('Requested path is outside the configured workspace root');
+      }
+      return expanded;
+    }
+
+    if (!options.nearest) {
+      throw new Error(`Directory not found: ${expanded}`);
+    }
+
+    let current = expanded;
+    while (true) {
+      const parent = path.dirname(current);
+      if (parent === current) break;
+      current = parent;
+      if (await isExistingDirectory(current)) {
+        return (await isWithinWorkspaceRoot(current, resolvedWorkspaceRoot))
+          ? current
+          : resolvedWorkspaceRoot;
+      }
+    }
+    return resolvedWorkspaceRoot;
+  }
+
   const fallbackDefault = path.resolve(options.defaultDir || os.homedir() || process.cwd());
   if (!requestedPath || !requestedPath.trim()) {
     return (await isExistingDirectory(fallbackDefault)) ? fallbackDefault : path.resolve(process.cwd());
@@ -184,6 +244,7 @@ export interface BrowseDirectoriesOptions {
   showHidden?: boolean;
   nearest?: boolean;
   defaultDir?: string;
+  workspaceRoot?: string;
 }
 
 export async function browseDirectories(
@@ -212,8 +273,13 @@ export async function browseDirectories(
 
   if (symlinkCandidates.length > 0) {
     const validSymlinks = await mapWithConcurrency(symlinkCandidates, GIT_CHECK_CONCURRENCY, async (name) => {
-      const ok = await isExistingDirectory(path.join(target, name));
-      return ok ? name : null;
+      const fullPath = path.join(target, name);
+      const ok = await isExistingDirectory(fullPath);
+      if (!ok) return null;
+      if (options.workspaceRoot && !(await isWithinWorkspaceRoot(fullPath, options.workspaceRoot))) {
+        return null;
+      }
+      return name;
     });
     for (const name of validSymlinks) {
       if (name) visibleDirNames.push(name);
@@ -228,7 +294,7 @@ export async function browseDirectories(
   const [currentIsGitRepo, gitFlags, roots] = await Promise.all([
     hasGitMarker(target),
     mapWithConcurrency(slicedNames, GIT_CHECK_CONCURRENCY, (name) => hasGitMarker(path.join(target, name))),
-    getDirectoryQuickRoots(options.defaultDir),
+    getDirectoryQuickRoots(options.defaultDir, options.workspaceRoot),
   ]);
 
   const entries: DirectoryBrowseEntry[] = slicedNames.map((name, idx) => ({
@@ -238,9 +304,17 @@ export async function browseDirectories(
   }));
 
   const parent = path.dirname(target);
+  let parentPath: string | null = parent === target ? null : parent;
+  if (options.workspaceRoot && parentPath) {
+    const allowedParent = await isWithinWorkspaceRoot(parentPath, options.workspaceRoot);
+    if (!allowedParent) {
+      parentPath = null;
+    }
+  }
+
   return {
     currentPath: target,
-    parentPath: parent === target ? null : parent,
+    parentPath,
     currentIsGitRepo,
     entries,
     roots,

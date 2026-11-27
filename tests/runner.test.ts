@@ -13,6 +13,8 @@ test('parseRunnerArgs supports per-service port specs, aliases, = syntax, and en
     '127.0.0.1',
     '--strict-port',
     '--no-auth',
+    '--workspace-root',
+    'C:\\projects',
     '--repo',
     'C:\\projects\\demo',
   ]);
@@ -26,6 +28,7 @@ test('parseRunnerArgs supports per-service port specs, aliases, = syntax, and en
   assert.equal(cli.host, '127.0.0.1');
   assert.equal(cli.strictPort, true);
   assert.equal(cli.noAuth, true);
+  assert.equal(cli.workspaceRoot, 'C:\\projects');
   assert.deepEqual(cli.repoPaths, ['C:\\projects\\demo']);
 
   const envParsed = parseRunnerArgs([], {
@@ -81,7 +84,16 @@ test('resolveRunnerPlan supports server-only, client-only with proxy-port, and s
   const isAvailable = async () => true;
 
   const serverOnly = await resolveRunnerPlan(
-    parseRunnerArgs(['--services', 'server', '--port', '9000', '--tailscale-port', 'off']),
+    parseRunnerArgs([
+      '--services',
+      'server',
+      '--port',
+      '9000',
+      '--tailscale-port',
+      'off',
+      '--workspace-root',
+      'C:\\projects',
+    ]),
     { isAvailable },
   );
   assert.equal(serverOnly.server.enabled, true);
@@ -89,6 +101,8 @@ test('resolveRunnerPlan supports server-only, client-only with proxy-port, and s
   assert.equal(serverOnly.client.enabled, false);
   assert.equal(serverOnly.client.port, null);
   assert.equal(serverOnly.tailscalePort, null);
+  assert.equal(serverOnly.server.env.GITWEB_WORKSPACE_ROOT, 'C:\\projects');
+  assert.ok(serverOnly.server.args.includes('--workspace-root'));
 
   const clientOnly = await resolveRunnerPlan(
     parseRunnerArgs(['--services', 'client', '--client-port', '4000', '--proxy-port', '9000']),

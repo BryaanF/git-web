@@ -6,9 +6,8 @@ import { fileURLToPath } from 'node:url';
 import { serve } from '@hono/node-server';
 import { serveStatic } from '@hono/node-server/serve-static';
 import { Hono } from 'hono';
-import { setCookie } from 'hono/cookie';
 import { streamSSE } from 'hono/streaming';
-import { createAuthManager, type AuthManager } from './auth.ts';
+import { createAuthManager, setAuthCookie, type AuthManager } from './auth.ts';
 import { browseDirectories } from './fs/browse.ts';
 import { GitCommandError } from './git/runner.ts';
 import {
@@ -47,6 +46,7 @@ interface CliConfig {
   host: string;
   noAuth: boolean;
   repoPaths: string[];
+  workspaceRoot?: string;
   allowPrivilegedPort: boolean;
   strictPort: boolean;
   ensureBuild: boolean;
@@ -102,6 +102,7 @@ function parseCliArgs(argv: string[]): CliConfig {
     host: process.env.GITWEB_HOST || '0.0.0.0',
     noAuth: process.env.GITWEB_NO_AUTH === '1',
     repoPaths: [],
+    workspaceRoot: process.env.GITWEB_WORKSPACE_ROOT?.trim() || undefined,
     allowPrivilegedPort: process.env.GITWEB_ALLOW_PRIVILEGED_PORT === '1',
     strictPort: process.env.GITWEB_STRICT_PORT === '1',
     ensureBuild: false,
@@ -134,6 +135,10 @@ function parseCliArgs(argv: string[]): CliConfig {
     } else if (flag === '--repo' || flag === '-r') {
       if (!value) throw new Error(`Missing value for ${flag}`);
       config.repoPaths.push(value);
+      if (consumedNext) i += 1;
+    } else if (flag === '--workspace-root') {
+      if (!value) throw new Error(`Missing value for ${flag}`);
+      config.workspaceRoot = value;
       if (consumedNext) i += 1;
     } else if (flag === '--no-auth') {
       config.noAuth = true;
@@ -171,6 +176,7 @@ Options:
       --tailscale-port <n>   Tailscale HTTPS serve port or "off" (default: 8443)
   -H, --host <ip>            Bind host interface (default: 0.0.0.0)
   -r, --repo <path>          Register a local Git repository (repeatable)
+      --workspace-root <dir> Restrict folder browsing & repo registration inside <dir>
       --strict-port          Fail instead of auto-stepping if selected port(s) are busy
       --allow-privileged-port Allow ports < 1024 (including 80/443)
       --ensure-build         Build client bundle automatically if dist/client is missing
@@ -200,6 +206,7 @@ export interface CreateAppOptions {
   host: string;
   clientPort?: number | null;
   tailscalePort?: number | null;
+  workspaceRoot?: string;
   distClientDir?: string;
   hasBuiltClient?: boolean;
 }
@@ -212,6 +219,7 @@ export function createGitDockApp(options: CreateAppOptions): Hono {
     host,
     clientPort = null,
     tailscalePort = DEFAULT_TAILSCALE_PORT,
+    workspaceRoot,
     distClientDir = '',
     hasBuiltClient = false,
   } = options;
@@ -238,17 +246,19 @@ export function createGitDockApp(options: CreateAppOptions): Hono {
     if (!auth.enabled) {
       return c.json({ ok: true, authEnabled: false });
     }
+    const rate = auth.checkPairRateLimit(c);
+    if (!rate.allowed) {
+      c.header('Retry-After', String(rate.retryAfterSec ?? 60));
+      return c.json({ ok: false, error: 'Too many pairing attempts. Please wait and try again.' }, 429);
+    }
     const body = (await c.req.json().catch(() => ({}))) as { token?: string };
     const provided = (body.token ?? '').trim();
     if (!provided || provided !== auth.token) {
+      auth.recordPairAttempt(c, false);
       return c.json({ ok: false, error: 'Invalid pairing token' }, 401);
     }
-    setCookie(c, 'gitdock_token', auth.token, {
-      httpOnly: true,
-      sameSite: 'Lax',
-      path: '/',
-      maxAge: 60 * 60 * 24 * 30,
-    });
+    auth.recordPairAttempt(c, true);
+    setAuthCookie(c, auth.token);
     return c.json({ ok: true, authEnabled: true });
   });
 
@@ -265,7 +275,7 @@ export function createGitDockApp(options: CreateAppOptions): Hono {
       const requestedPath = c.req.query('path');
       const showHidden = c.req.query('hidden') === '1' || c.req.query('hidden') === 'true';
       const nearest = c.req.query('nearest') === '1' || c.req.query('nearest') === 'true';
-      const data = await browseDirectories(requestedPath, { showHidden, nearest });
+      const data = await browseDirectories(requestedPath, { showHidden, nearest, workspaceRoot });
       return c.json(data);
     } catch (err) {
       const parsed = parseErrorPayload(err);
@@ -615,8 +625,7 @@ export function createGitDockApp(options: CreateAppOptions): Hono {
   });
 
   if (hasBuiltClient && distClientDir) {
-    const relRoot = path.relative(process.cwd(), distClientDir) || '.';
-    app.use('/*', serveStatic({ root: relRoot }));
+    app.use('/*', serveStatic({ root: distClientDir }));
     app.get('*', async (c) => {
       const html = await fsPromises.readFile(path.join(distClientDir, 'index.html'), 'utf8');
       return c.html(html);
@@ -713,13 +722,20 @@ export async function startServer() {
     hasBuiltClient = fs.existsSync(distIndexHtml);
   }
 
-  const repoStore = new RepoStore(projectRoot);
+  const repoStore = new RepoStore(projectRoot, { workspaceRoot: cli.workspaceRoot });
   await repoStore.init(cli.repoPaths);
 
   const auth = await createAuthManager(projectRoot, {
     disabled: cli.noAuth,
     explicitToken: process.env.GITWEB_TOKEN,
+    clientPort: cli.clientPort,
   });
+
+  if (!auth.enabled && cli.host !== '127.0.0.1' && cli.host !== 'localhost' && cli.host !== '::1') {
+    console.warn(
+      `[GitDock][SECURITY] --no-auth is active while binding "${cli.host}". Any device able to reach this interface can browse folders and run Git operations without a token.`,
+    );
+  }
 
   const resolvedPort = await resolvePortSpec(effectivePortSpec, {
     host: cli.host,
@@ -738,6 +754,7 @@ export async function startServer() {
     host: cli.host,
     clientPort: cli.clientPort,
     tailscalePort: effectiveTailscalePort,
+    workspaceRoot: cli.workspaceRoot,
     distClientDir,
     hasBuiltClient,
   });
@@ -803,6 +820,20 @@ export async function startServer() {
   console.log('  Scan QR from your smartphone camera:');
   console.log(qrText);
   console.log('==============================================================\n');
+
+  const shutdown = () => {
+    const forceTimer = setTimeout(() => process.exit(0), 2500);
+    forceTimer.unref();
+    if ('closeAllConnections' in server && typeof server.closeAllConnections === 'function') {
+      server.closeAllConnections();
+    }
+    server.close(() => {
+      clearTimeout(forceTimer);
+      process.exit(0);
+    });
+  };
+  process.once('SIGINT', shutdown);
+  process.once('SIGTERM', shutdown);
 
   return { server, port, app };
 }

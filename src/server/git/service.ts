@@ -25,6 +25,9 @@ const MAX_READ_BYTES = 512 * 1024;
 const MAX_CONTENT_BYTES = 180 * 1024;
 
 export function assertSafeRepoPath(repoRoot: string, filePath: string): string {
+  if (!filePath || /[\0\r\n]/.test(filePath)) {
+    throw new Error(`Invalid repository file path: ${filePath}`);
+  }
   const normalizedRoot = path.resolve(repoRoot);
   const resolvedTarget = path.resolve(normalizedRoot, filePath);
   const relative = path.relative(normalizedRoot, resolvedTarget);
@@ -36,6 +39,34 @@ export function assertSafeRepoPath(repoRoot: string, filePath: string): string {
     relative.split(path.sep).includes('.git')
   ) {
     throw new Error(`Invalid repository file path: ${filePath}`);
+  }
+  return resolvedTarget;
+}
+
+async function resolveRealpathOrParent(targetPath: string): Promise<string | null> {
+  let current = path.resolve(targetPath);
+  while (true) {
+    try {
+      return await fs.realpath(current);
+    } catch {
+      const parent = path.dirname(current);
+      if (parent === current) return null;
+      current = parent;
+    }
+  }
+}
+
+async function assertSafeWorktreeTarget(repoRoot: string, filePath: string): Promise<string> {
+  const resolvedTarget = assertSafeRepoPath(repoRoot, filePath);
+  const [realRoot, realTargetOrAncestor] = await Promise.all([
+    fs.realpath(path.resolve(repoRoot)).catch(() => path.resolve(repoRoot)),
+    resolveRealpathOrParent(resolvedTarget),
+  ]);
+  if (realTargetOrAncestor) {
+    const rel = path.relative(realRoot, realTargetOrAncestor);
+    if (rel.startsWith('..') || path.isAbsolute(rel)) {
+      throw new Error(`Repository path resolves outside root: ${filePath}`);
+    }
   }
   return resolvedTarget;
 }
@@ -133,7 +164,7 @@ async function readGitBlobsBatch(repoPath: string, specs: string[]): Promise<Arr
 }
 
 async function readWorktreeText(repoPath: string, filePath: string): Promise<{ text?: string; isBinary: boolean; isTooLarge: boolean }> {
-  const absPath = assertSafeRepoPath(repoPath, filePath);
+  const absPath = await assertSafeWorktreeTarget(repoPath, filePath);
   try {
     const stat = await fs.stat(absPath);
     if (!stat.isFile()) {
@@ -685,10 +716,8 @@ export async function getCommitFileDiff(
   if (!/^[0-9a-fA-F]{4,40}$/.test(sha)) {
     throw new Error('Invalid commit SHA');
   }
+  assertSafeRepoPath(repoPath, filePath);
   const gitPath = toGitSlashPath(filePath);
-  if (gitPath.includes('..')) {
-    throw new Error('Invalid file path');
-  }
 
   const lang = inferLanguageFromPath(gitPath);
   const ctx = Math.max(0, Math.min(contextLines, 50));
@@ -965,7 +994,7 @@ export async function unstageFiles(repoPath: string, paths?: string[]): Promise<
 }
 
 export async function discardUnstagedFile(repoPath: string, filePath: string): Promise<void> {
-  const absPath = assertSafeRepoPath(repoPath, filePath);
+  const absPath = await assertSafeWorktreeTarget(repoPath, filePath);
   const gitPath = toGitSlashPath(filePath);
 
   const untrackedCheck = await runGit(repoPath, [
@@ -1068,14 +1097,25 @@ export async function listBranches(repoPath: string): Promise<BranchItem[]> {
 }
 
 export async function checkoutBranch(repoPath: string, branchName: string, create = false): Promise<void> {
-  if (!branchName.trim()) {
+  const cleanName = branchName.trim();
+  if (!cleanName) {
     throw new Error('Branch name is required');
+  }
+  if (cleanName.startsWith('-') || /[\x00-\x1f\x7f]/.test(cleanName)) {
+    throw new Error('Invalid branch name');
+  }
+  const refCheck = await runGit(repoPath, ['check-ref-format', '--branch', cleanName], {
+    allowNonZeroExit: true,
+    readOnly: true,
+  });
+  if (refCheck.exitCode !== 0) {
+    throw new Error(`Invalid Git branch name: ${cleanName}`);
   }
   try {
     if (create) {
-      await runGit(repoPath, ['checkout', '-b', branchName.trim()]);
+      await runGit(repoPath, ['checkout', '-b', cleanName]);
     } else {
-      await runGit(repoPath, ['checkout', branchName.trim()]);
+      await runGit(repoPath, ['checkout', cleanName]);
     }
   } catch (err) {
     if (err instanceof GitCommandError) {
