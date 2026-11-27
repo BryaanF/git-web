@@ -5,6 +5,7 @@ import {
   ArrowLeft,
   ChevronLeft,
   ChevronRight,
+  ChevronUp,
   Columns2,
   Copy,
   FileCode2,
@@ -17,6 +18,22 @@ import { useEffect, useMemo, useState } from 'react';
 import type { DiffPayload } from '../../shared/types.ts';
 import { FileStatusBadge } from './StatusBadge.tsx';
 
+export interface DiffViewerPreferences {
+  mode: 'unified' | 'split';
+  wordWrap: boolean;
+  fontSize: number;
+  rawMode: boolean;
+}
+
+export function getDefaultDiffViewerPreferences(): DiffViewerPreferences {
+  return {
+    mode: typeof window !== 'undefined' && window.innerWidth >= 1024 ? 'split' : 'unified',
+    wordWrap: true,
+    fontSize: 12,
+    rawMode: false,
+  };
+}
+
 interface MobileDiffViewerProps {
   diff: DiffPayload | null;
   loading: boolean;
@@ -24,6 +41,10 @@ interface MobileDiffViewerProps {
   contextLines: number;
   onChangeContextLines: (next: number) => void;
   onBack?: () => void;
+  onCollapse?: () => void;
+  inline?: boolean;
+  preferences?: DiffViewerPreferences;
+  onChangePreferences?: (next: DiffViewerPreferences) => void;
   onPrevFile?: () => void;
   onNextFile?: () => void;
   filePositionLabel?: string;
@@ -133,6 +154,10 @@ export function MobileDiffViewer({
   contextLines,
   onChangeContextLines,
   onBack,
+  onCollapse,
+  inline = false,
+  preferences,
+  onChangePreferences,
   onPrevFile,
   onNextFile,
   filePositionLabel,
@@ -144,12 +169,19 @@ export function MobileDiffViewer({
   const [isMobileScreen, setIsMobileScreen] = useState(() =>
     typeof window !== 'undefined' ? window.innerWidth < 768 : true,
   );
-  const [mode, setMode] = useState<'unified' | 'split'>(() =>
-    typeof window !== 'undefined' && window.innerWidth >= 1024 ? 'split' : 'unified',
+  const [localPrefs, setLocalPrefs] = useState<DiffViewerPreferences>(() =>
+    getDefaultDiffViewerPreferences(),
   );
-  const [wordWrap, setWordWrap] = useState(true);
-  const [fontSize, setFontSize] = useState<number>(12);
-  const [rawMode, setRawMode] = useState(false);
+  const activePrefs = preferences ?? localPrefs;
+  const { mode, wordWrap, fontSize, rawMode } = activePrefs;
+  const updatePrefs = (patch: Partial<DiffViewerPreferences>) => {
+    const next = { ...activePrefs, ...patch };
+    if (onChangePreferences) {
+      onChangePreferences(next);
+    } else {
+      setLocalPrefs(next);
+    }
+  };
   const [copiedPath, setCopiedPath] = useState(false);
 
   useEffect(() => {
@@ -212,7 +244,9 @@ export function MobileDiffViewer({
 
   if (loading && !diff) {
     return (
-      <div className="flex min-h-[320px] flex-col items-center justify-center rounded-2xl border border-[#30363d] bg-[#161b22] p-8 text-center">
+      <div
+        className={`flex ${inline ? 'min-h-[200px]' : 'min-h-[320px]'} flex-col items-center justify-center rounded-2xl border border-[#30363d] bg-[#161b22] p-8 text-center`}
+      >
         <div className="h-6 w-6 animate-spin rounded-full border-2 border-sky-400 border-t-transparent" />
         <p className="mt-3 text-sm text-[#8b949e]">Loading diff...</p>
       </div>
@@ -222,14 +256,14 @@ export function MobileDiffViewer({
   if (error) {
     return (
       <div className="rounded-2xl border border-rose-500/40 bg-rose-500/10 p-5 text-sm text-rose-200">
-        {onBack && (
+        {(onBack || onCollapse) && (
           <button
             type="button"
-            onClick={onBack}
+            onClick={onBack ?? onCollapse}
             className="mb-3 inline-flex items-center gap-1.5 rounded-lg bg-[#21262d] px-3 py-1.5 text-xs font-medium text-[#e6edf3]"
           >
-            <ArrowLeft className="h-3.5 w-3.5" />
-            Back
+            {onBack ? <ArrowLeft className="h-3.5 w-3.5" /> : <ChevronUp className="h-3.5 w-3.5" />}
+            {onBack ? 'Back' : 'Collapse'}
           </button>
         )}
         <p>{error}</p>
@@ -310,25 +344,38 @@ export function MobileDiffViewer({
             </div>
           </div>
 
-          {actionButton && (
-            <button
-              type="button"
-              disabled={actionButton.busy}
-              onClick={actionButton.onClick}
-              className={`inline-flex shrink-0 items-center gap-1 rounded-xl px-3 py-2 text-xs font-semibold transition active:scale-95 disabled:opacity-50 ${
-                actionButton.variant === 'stage'
-                  ? 'bg-emerald-600 text-white hover:bg-emerald-500'
-                  : 'border border-amber-500/40 bg-amber-500/15 text-amber-200 hover:bg-amber-500/25'
-              }`}
-            >
-              {actionButton.variant === 'stage' ? (
-                <Plus className="h-3.5 w-3.5" />
-              ) : (
-                <Minus className="h-3.5 w-3.5" />
-              )}
-              {actionButton.label}
-            </button>
-          )}
+          <div className="flex shrink-0 items-center gap-1.5">
+            {actionButton && (
+              <button
+                type="button"
+                disabled={actionButton.busy}
+                onClick={actionButton.onClick}
+                className={`inline-flex shrink-0 items-center gap-1 rounded-xl px-3 py-2 text-xs font-semibold transition active:scale-95 disabled:opacity-50 ${
+                  actionButton.variant === 'stage'
+                    ? 'bg-emerald-600 text-white hover:bg-emerald-500'
+                    : 'border border-amber-500/40 bg-amber-500/15 text-amber-200 hover:bg-amber-500/25'
+                }`}
+              >
+                {actionButton.variant === 'stage' ? (
+                  <Plus className="h-3.5 w-3.5" />
+                ) : (
+                  <Minus className="h-3.5 w-3.5" />
+                )}
+                {actionButton.label}
+              </button>
+            )}
+            {onCollapse && !onBack && (
+              <button
+                type="button"
+                onClick={onCollapse}
+                title="Collapse diff"
+                aria-label="Collapse diff"
+                className="flex h-8 w-8 shrink-0 items-center justify-center rounded-xl border border-[#30363d] bg-[#21262d] text-[#8b949e] hover:border-[#484f58] hover:text-[#e6edf3] active:scale-95"
+              >
+                <ChevronUp className="h-4 w-4" />
+              </button>
+            )}
+          </div>
         </div>
 
         {/* Viewer controls bar */}
@@ -336,7 +383,7 @@ export function MobileDiffViewer({
           <div className="flex flex-wrap items-center gap-1.5">
             <button
               type="button"
-              onClick={() => setWordWrap((w) => !w)}
+              onClick={() => updatePrefs({ wordWrap: !wordWrap })}
               className={`inline-flex items-center gap-1 rounded-lg border px-2.5 py-1.5 text-xs font-medium transition ${
                 wordWrap
                   ? 'border-sky-500/40 bg-sky-500/15 text-sky-300'
@@ -349,7 +396,7 @@ export function MobileDiffViewer({
 
             <button
               type="button"
-              onClick={() => setMode((m) => (m === 'unified' ? 'split' : 'unified'))}
+              onClick={() => updatePrefs({ mode: mode === 'unified' ? 'split' : 'unified' })}
               className="hidden items-center gap-1 rounded-lg border border-[#30363d] bg-[#0d1117] px-2.5 py-1.5 text-xs font-medium text-[#e6edf3] md:inline-flex"
             >
               {effectiveMode === 'unified' ? (
@@ -378,7 +425,7 @@ export function MobileDiffViewer({
 
             <select
               value={fontSize}
-              onChange={(e) => setFontSize(Number(e.target.value))}
+              onChange={(e) => updatePrefs({ fontSize: Number(e.target.value) })}
               aria-label="Font size"
               className="rounded-lg border border-[#30363d] bg-[#0d1117] px-2 py-1.5 text-xs text-[#e6edf3] focus:outline-none"
             >
@@ -389,7 +436,7 @@ export function MobileDiffViewer({
 
             <button
               type="button"
-              onClick={() => setRawMode((r) => !r)}
+              onClick={() => updatePrefs({ rawMode: !rawMode })}
               className={`inline-flex items-center gap-1 rounded-lg border px-2 py-1.5 text-xs font-medium ${
                 rawMode
                   ? 'border-amber-500/40 bg-amber-500/15 text-amber-300'
